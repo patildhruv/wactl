@@ -38,9 +38,9 @@
   <div class="header">
     <h1><span>wactl</span> Dashboard</h1>
     <nav>
-      <a href="/" class="active">Dashboard</a>
-      <a href="/auth">QR Auth</a>
-      <a href="/settings">Settings</a>
+      <a href="" class="active" data-nav="/">Dashboard</a>
+      <a href="" data-nav="/auth">QR Auth</a>
+      <a href="" data-nav="/settings">Settings</a>
       <button id="logout">Logout</button>
     </nav>
   </div>
@@ -67,10 +67,12 @@
     </div>
   </div>
   <script>
+    const B = window.BASE_PATH || '';
+    document.querySelectorAll('[data-nav]').forEach(a => a.href = B + a.getAttribute('data-nav'));
     async function refresh() {
       try {
-        const res = await fetch('/api/status');
-        if (res.status === 401) { window.location.href = '/login'; return; }
+        const res = await fetch(B + '/api/status');
+        if (res.status === 401) { window.location.href = B + '/login'; return; }
         const data = await res.json();
         const dot = data.bridge.connected ? '<span class="status-dot green"></span>Connected' :
           data.bridge.loggedIn ? '<span class="status-dot yellow"></span>Needs QR Scan' :
@@ -105,8 +107,8 @@
     setInterval(refresh, 10000);
 
     document.getElementById('logout').addEventListener('click', async () => {
-      await fetch('/logout', { method: 'POST' });
-      window.location.href = '/login';
+      await fetch(B + '/logout', { method: 'POST' });
+      window.location.href = B + '/login';
     });
   </script>
 </body>

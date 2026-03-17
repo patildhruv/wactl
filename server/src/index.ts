@@ -22,6 +22,7 @@ const ADMIN_USER = process.env.ADMIN_USER || "admin";
 const ADMIN_PASSWORD_HASH = process.env.ADMIN_PASSWORD_HASH || "";
 const DATA_DIR = process.env.DATA_DIR || path.resolve(__dirname, "../../data");
 const BRIDGE_DIR = process.env.BRIDGE_DIR || path.resolve(__dirname, "../../bridge");
+const BASE_PATH = process.env.BASE_PATH || ""; // e.g. "/dhruv" for multi-instance
 
 if (!MCP_API_KEY) {
   console.warn("[wactl] WARNING: MCP_API_KEY not set — MCP endpoint will reject all requests");
@@ -67,12 +68,14 @@ mcpHttpServer.listen(MCP_PORT, () => {
 const adminApp = express();
 adminApp.use(cookieParser());
 
+const envFilePath = process.env.ENV_FILE_PATH || path.resolve(__dirname, "../../.env");
 const adminRouter = createAdminRouter(bridge, mcpServer, {
   adminUser: ADMIN_USER,
   adminPasswordHash: ADMIN_PASSWORD_HASH,
   mcpPort: MCP_PORT,
   dataDir: DATA_DIR,
-  envFilePath: path.resolve(__dirname, "../../.env"),
+  envFilePath,
+  basePath: BASE_PATH,
 });
 adminApp.use(adminRouter);
 
