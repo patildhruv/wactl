@@ -24,9 +24,18 @@ export function createAdminRouter(
     mcpPort: number;
     dataDir: string;
     envFilePath: string;
+    basePath: string;
   }
 ): express.Router {
   const router = express.Router();
+  const basePath = config.basePath || "";
+
+  // Inject BASE_PATH into HTML views so client-side JS can build correct URLs.
+  // The <script> tag is injected right after <head> so it's available before any other JS.
+  function injectBasePath(html: string): string {
+    const injection = `<script>window.BASE_PATH="${basePath}";</script>`;
+    return html.replace("<head>", `<head>${injection}`);
+  }
 
   // Serve static HTML views
   const loginHTML = fs.readFileSync(path.join(VIEWS_DIR, "login.html"), "utf-8");
@@ -47,7 +56,7 @@ export function createAdminRouter(
       if (req.path.startsWith("/api/")) {
         res.status(401).json({ error: "Unauthorized" });
       } else {
-        res.redirect("/login");
+        res.redirect(`${basePath}/login`);
       }
       return;
     }
@@ -66,7 +75,7 @@ export function createAdminRouter(
   // --- Public routes ---
 
   router.get("/login", (_req: Request, res: Response) => {
-    res.type("html").send(loginHTML);
+    res.type("html").send(injectBasePath(loginHTML));
   });
 
   router.post("/login", express.json(), async (req: Request, res: Response) => {
@@ -109,15 +118,15 @@ export function createAdminRouter(
   // --- Protected routes ---
 
   router.get("/", requireAuth, (_req: Request, res: Response) => {
-    res.type("html").send(dashboardHTML);
+    res.type("html").send(injectBasePath(dashboardHTML));
   });
 
   router.get("/auth", requireAuth, (_req: Request, res: Response) => {
-    res.type("html").send(qrAuthHTML);
+    res.type("html").send(injectBasePath(qrAuthHTML));
   });
 
   router.get("/settings", requireAuth, (_req: Request, res: Response) => {
-    res.type("html").send(settingsHTML);
+    res.type("html").send(injectBasePath(settingsHTML));
   });
 
   // --- API routes (protected) ---
