@@ -31,6 +31,12 @@ export function createAdminRouter(
   const dashboardHTML = fs.readFileSync(path.join(VIEWS_DIR, "dashboard.html"), "utf-8");
   const qrAuthHTML = fs.readFileSync(path.join(VIEWS_DIR, "qr-auth.html"), "utf-8");
 
+  // Check if request is from localhost (used for CLI access without auth)
+  function isLocalhost(req: Request): boolean {
+    const addr = req.socket.remoteAddress || "";
+    return addr === "127.0.0.1" || addr === "::1" || addr === "::ffff:127.0.0.1";
+  }
+
   // Auth middleware for protected routes
   function requireAuth(req: Request, res: Response, next: NextFunction): void {
     const sessionId = req.cookies?.session;
@@ -43,6 +49,15 @@ export function createAdminRouter(
       return;
     }
     next();
+  }
+
+  // Auth middleware that allows localhost access (for CLI)
+  function requireAuthOrLocal(req: Request, res: Response, next: NextFunction): void {
+    if (isLocalhost(req)) {
+      next();
+      return;
+    }
+    requireAuth(req, res, next);
   }
 
   // --- Public routes ---
@@ -100,7 +115,7 @@ export function createAdminRouter(
 
   // --- API routes (protected) ---
 
-  router.get("/api/status", requireAuth, async (_req: Request, res: Response) => {
+  router.get("/api/status", requireAuthOrLocal, async (_req: Request, res: Response) => {
     try {
       const bridgeStatus = await bridge.getStatus();
       const updateHistoryPath = path.join(config.dataDir, "update-history.json");
@@ -129,7 +144,7 @@ export function createAdminRouter(
     }
   });
 
-  router.get("/api/qr", requireAuth, async (_req: Request, res: Response) => {
+  router.get("/api/qr", requireAuthOrLocal, async (_req: Request, res: Response) => {
     try {
       const qr = await bridge.getQR();
       res.json(qr);
