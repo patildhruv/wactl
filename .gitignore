@@ -1,3 +1,33 @@
+# Dependencies
+node_modules/
+
+# Build output
+bridge/wactl-bridge
+bridge/wactl-bridge-new
+server/dist/
+
+# Data
+data/
 *.db
-claude_desktop_config.json
+*.db-wal
+*.db-shm
+
+# Environment
+.env
+envs/*.env
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Misc
+*.log
 whatsapp.log
+claude_desktop_config.json
+/tmp/
