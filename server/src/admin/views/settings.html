@@ -74,9 +74,9 @@
   <div class="header">
     <h1><span>wactl</span> Settings</h1>
     <nav>
-      <a href="/">Dashboard</a>
-      <a href="/auth">QR Auth</a>
-      <a href="/settings" class="active">Settings</a>
+      <a href="" data-nav="/">Dashboard</a>
+      <a href="" data-nav="/auth">QR Auth</a>
+      <a href="" class="active" data-nav="/settings">Settings</a>
       <button id="logout">Logout</button>
     </nav>
   </div>
@@ -113,6 +113,8 @@
   <div class="toast" id="toast"></div>
 
   <script>
+    const B = window.BASE_PATH || '';
+    document.querySelectorAll('[data-nav]').forEach(a => a.href = B + a.getAttribute('data-nav'));
     let apiKey = '';
     let mcpPort = 3000;
     let keyVisible = false;
@@ -122,12 +124,14 @@
       return key.substring(0, 8) + '\u2022'.repeat(24) + key.substring(key.length - 8);
     }
 
-    function getHost() {
-      return window.location.hostname;
-    }
-
     function getEndpointUrl() {
-      return 'http://' + getHost() + ':' + mcpPort + '/mcp/sse';
+      // When behind Caddy with a base path, the MCP endpoint is at the same origin + base path
+      const origin = window.location.origin;
+      if (B) {
+        return origin + B + '/mcp/sse';
+      }
+      // Direct access (no reverse proxy) — use hostname + MCP port
+      return 'http://' + window.location.hostname + ':' + mcpPort + '/mcp/sse';
     }
 
     function getConfigSnippet() {
@@ -159,8 +163,8 @@
 
     async function loadSettings() {
       try {
-        const res = await fetch('/api/settings');
-        if (res.status === 401) { window.location.href = '/login'; return; }
+        const res = await fetch(B + '/api/settings');
+        if (res.status === 401) { window.location.href = B + '/login'; return; }
         const data = await res.json();
         apiKey = data.apiKey;
         mcpPort = data.mcpPort;
@@ -190,8 +194,8 @@
     document.getElementById('regenKeyBtn').addEventListener('click', async () => {
       if (!confirm('Regenerate the MCP API key? Existing clients will need the new key to reconnect.')) return;
       try {
-        const res = await fetch('/api/settings/regenerate-key', { method: 'POST' });
-        if (res.status === 401) { window.location.href = '/login'; return; }
+        const res = await fetch(B + '/api/settings/regenerate-key', { method: 'POST' });
+        if (res.status === 401) { window.location.href = B + '/login'; return; }
         const data = await res.json();
         if (data.apiKey) {
           apiKey = data.apiKey;
@@ -207,8 +211,8 @@
     });
 
     document.getElementById('logout').addEventListener('click', async () => {
-      await fetch('/logout', { method: 'POST' });
-      window.location.href = '/login';
+      await fetch(B + '/logout', { method: 'POST' });
+      window.location.href = B + '/login';
     });
 
     loadSettings();

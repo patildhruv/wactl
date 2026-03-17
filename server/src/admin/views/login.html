@@ -51,12 +51,13 @@
     </form>
   </div>
   <script>
+    const B = window.BASE_PATH || '';
     document.getElementById('loginForm').addEventListener('submit', async (e) => {
       e.preventDefault();
       const errEl = document.getElementById('error');
       errEl.style.display = 'none';
       try {
-        const res = await fetch('/login', {
+        const res = await fetch(B + '/login', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -65,7 +66,7 @@
           }),
         });
         if (res.ok) {
-          window.location.href = '/';
+          window.location.href = B + '/';
         } else {
           const data = await res.json();
           errEl.textContent = data.error || 'Login failed';
