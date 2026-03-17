@@ -72,6 +72,7 @@ const adminRouter = createAdminRouter(bridge, mcpServer, {
   adminPasswordHash: ADMIN_PASSWORD_HASH,
   mcpPort: MCP_PORT,
   dataDir: DATA_DIR,
+  envFilePath: path.resolve(__dirname, "../../.env"),
 });
 adminApp.use(adminRouter);
 

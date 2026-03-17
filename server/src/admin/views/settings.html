@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>wactl — Settings</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0f172a; color: #e2e8f0; padding: 1.5rem;
+    }
+    .header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1.5rem; }
+    .header h1 { font-size: 1.25rem; }
+    .header h1 span { color: #22d3ee; }
+    nav a { color: #94a3b8; text-decoration: none; margin-left: 1rem; font-size: 0.875rem; }
+    nav a:hover { color: #e2e8f0; }
+    nav a.active { color: #22d3ee; }
+    #logout { color: #f87171; cursor: pointer; background: none; border: none; font-size: 0.875rem; }
+    #logout:hover { color: #ef4444; }
+    .card {
+      background: #1e293b; border-radius: 8px; padding: 1.25rem;
+      border: 1px solid #334155; margin-bottom: 1rem;
+    }
+    .card h2 { font-size: 0.875rem; color: #94a3b8; margin-bottom: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; }
+    .label { font-size: 0.875rem; color: #64748b; margin-bottom: 0.25rem; }
+    .key-display {
+      display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.75rem;
+    }
+    .key-value {
+      font-family: 'SF Mono', 'Fira Code', 'Fira Mono', monospace;
+      background: #0f172a; border: 1px solid #334155; border-radius: 6px;
+      padding: 0.5rem 0.75rem; font-size: 0.875rem; flex: 1;
+      word-break: break-all; color: #e2e8f0;
+    }
+    .btn {
+      padding: 0.5rem 1rem; border: none; border-radius: 6px;
+      cursor: pointer; font-size: 0.8rem; font-weight: 500;
+      transition: background 0.15s;
+    }
+    .btn-secondary {
+      background: #334155; color: #e2e8f0;
+    }
+    .btn-secondary:hover { background: #475569; }
+    .btn-danger {
+      background: #ef4444; color: white;
+    }
+    .btn-danger:hover { background: #dc2626; }
+    .btn-group { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+    .endpoint-url {
+      font-family: 'SF Mono', 'Fira Code', 'Fira Mono', monospace;
+      background: #0f172a; border: 1px solid #334155; border-radius: 6px;
+      padding: 0.5rem 0.75rem; font-size: 0.875rem; color: #22d3ee;
+      margin-bottom: 0.75rem;
+    }
+    .config-snippet {
+      font-family: 'SF Mono', 'Fira Code', 'Fira Mono', monospace;
+      background: #0f172a; border: 1px solid #334155; border-radius: 6px;
+      padding: 0.75rem; font-size: 0.8rem; color: #e2e8f0;
+      white-space: pre; overflow-x: auto; margin-top: 0.5rem;
+      line-height: 1.5;
+    }
+    .toast {
+      position: fixed; bottom: 1.5rem; right: 1.5rem;
+      background: #22c55e; color: white; padding: 0.75rem 1.25rem;
+      border-radius: 8px; font-size: 0.875rem; font-weight: 500;
+      opacity: 0; transition: opacity 0.3s; pointer-events: none;
+    }
+    .toast.show { opacity: 1; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1><span>wactl</span> Settings</h1>
+    <nav>
+      <a href="/">Dashboard</a>
+      <a href="/auth">QR Auth</a>
+      <a href="/settings" class="active">Settings</a>
+      <button id="logout">Logout</button>
+    </nav>
+  </div>
+
+  <div class="card">
+    <h2>MCP API Key</h2>
+    <div class="label">Current API key</div>
+    <div class="key-display">
+      <div class="key-value" id="apiKeyDisplay">Loading...</div>
+    </div>
+    <div class="btn-group">
+      <button class="btn btn-secondary" id="toggleKeyBtn">Show</button>
+      <button class="btn btn-secondary" id="copyKeyBtn">Copy</button>
+      <button class="btn btn-danger" id="regenKeyBtn">Regenerate</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>MCP Endpoint</h2>
+    <div class="label">SSE endpoint URL</div>
+    <div class="endpoint-url" id="endpointUrl">Loading...</div>
+    <button class="btn btn-secondary" id="copyEndpointBtn">Copy URL</button>
+  </div>
+
+  <div class="card">
+    <h2>MCP Client Config</h2>
+    <div class="label">Ready-to-use configuration for Claude Desktop and other MCP clients</div>
+    <div class="config-snippet" id="configSnippet">Loading...</div>
+    <div style="margin-top: 0.75rem;">
+      <button class="btn btn-secondary" id="copyConfigBtn">Copy Config</button>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+    let apiKey = '';
+    let mcpPort = 3000;
+    let keyVisible = false;
+
+    function maskKey(key) {
+      if (!key) return '';
+      return key.substring(0, 8) + '\u2022'.repeat(24) + key.substring(key.length - 8);
+    }
+
+    function getHost() {
+      return window.location.hostname;
+    }
+
+    function getEndpointUrl() {
+      return 'http://' + getHost() + ':' + mcpPort + '/mcp/sse';
+    }
+
+    function getConfigSnippet() {
+      return JSON.stringify({
+        "mcpServers": {
+          "wactl": {
+            "url": getEndpointUrl(),
+            "headers": {
+              "X-API-Key": apiKey
+            }
+          }
+        }
+      }, null, 2);
+    }
+
+    function updateDisplay() {
+      document.getElementById('apiKeyDisplay').textContent = keyVisible ? apiKey : maskKey(apiKey);
+      document.getElementById('toggleKeyBtn').textContent = keyVisible ? 'Hide' : 'Show';
+      document.getElementById('endpointUrl').textContent = getEndpointUrl();
+      document.getElementById('configSnippet').textContent = getConfigSnippet();
+    }
+
+    function showToast(message) {
+      const toast = document.getElementById('toast');
+      toast.textContent = message;
+      toast.classList.add('show');
+      setTimeout(() => toast.classList.remove('show'), 2000);
+    }
+
+    async function loadSettings() {
+      try {
+        const res = await fetch('/api/settings');
+        if (res.status === 401) { window.location.href = '/login'; return; }
+        const data = await res.json();
+        apiKey = data.apiKey;
+        mcpPort = data.mcpPort;
+        updateDisplay();
+      } catch (e) {
+        console.error('Failed to load settings:', e);
+      }
+    }
+
+    document.getElementById('toggleKeyBtn').addEventListener('click', () => {
+      keyVisible = !keyVisible;
+      updateDisplay();
+    });
+
+    document.getElementById('copyKeyBtn').addEventListener('click', () => {
+      navigator.clipboard.writeText(apiKey).then(() => showToast('API key copied'));
+    });
+
+    document.getElementById('copyEndpointBtn').addEventListener('click', () => {
+      navigator.clipboard.writeText(getEndpointUrl()).then(() => showToast('Endpoint URL copied'));
+    });
+
+    document.getElementById('copyConfigBtn').addEventListener('click', () => {
+      navigator.clipboard.writeText(getConfigSnippet()).then(() => showToast('Config copied'));
+    });
+
+    document.getElementById('regenKeyBtn').addEventListener('click', async () => {
+      if (!confirm('Regenerate the MCP API key? Existing clients will need the new key to reconnect.')) return;
+      try {
+        const res = await fetch('/api/settings/regenerate-key', { method: 'POST' });
+        if (res.status === 401) { window.location.href = '/login'; return; }
+        const data = await res.json();
+        if (data.apiKey) {
+          apiKey = data.apiKey;
+          keyVisible = true;
+          updateDisplay();
+          showToast('API key regenerated');
+        } else {
+          alert('Failed to regenerate key: ' + (data.error || 'Unknown error'));
+        }
+      } catch (e) {
+        alert('Failed to regenerate key');
+      }
+    });
+
+    document.getElementById('logout').addEventListener('click', async () => {
+      await fetch('/logout', { method: 'POST' });
+      window.location.href = '/login';
+    });
+
+    loadSettings();
+  </script>
+</body>
+</html>
