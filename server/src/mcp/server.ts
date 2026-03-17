@@ -1,6 +1,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { IncomingMessage, ServerResponse } from "http";
+import { randomUUID } from "crypto";
 import { z } from "zod";
 import { BridgeClient } from "../bridge/client";
 import { validateApiKey } from "./auth";
@@ -12,6 +14,7 @@ export class MCPServerWrapper {
   private apiKey: string;
   private basePath: string;
   private transports: Map<string, SSEServerTransport> = new Map();
+  private streamableSessions: Map<string, StreamableHTTPServerTransport> = new Map();
 
   constructor(bridge: BridgeClient, apiKey: string, basePath: string = "") {
     this.bridge = bridge;
@@ -151,8 +154,49 @@ export class MCPServerWrapper {
     await transport.handlePostMessage(req, res);
   }
 
+  async handleStreamableHTTP(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!validateApiKey(req, this.apiKey)) {
+      res.writeHead(401, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Invalid or missing API key" }));
+      return;
+    }
+
+    // Check for existing session
+    const sessionId = req.headers["mcp-session-id"] as string | undefined;
+    if (sessionId && this.streamableSessions.has(sessionId)) {
+      const transport = this.streamableSessions.get(sessionId)!;
+      await transport.handleRequest(req, res, (req as any).body);
+      return;
+    }
+
+    // New session — only allowed via POST (initialization)
+    if (req.method === "POST") {
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: () => randomUUID(),
+      });
+
+      transport.onclose = () => {
+        if (transport.sessionId) {
+          this.streamableSessions.delete(transport.sessionId);
+        }
+      };
+
+      await this.server.connect(transport);
+      await transport.handleRequest(req, res, (req as any).body);
+
+      if (transport.sessionId) {
+        this.streamableSessions.set(transport.sessionId, transport);
+      }
+      return;
+    }
+
+    // GET/DELETE without session — not valid
+    res.writeHead(400, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "Missing or invalid Mcp-Session-Id header" }));
+  }
+
   getConnectedClients(): number {
-    return this.transports.size;
+    return this.transports.size + this.streamableSessions.size;
   }
 
   getApiKey(): string {
