@@ -21,9 +21,10 @@ apt-get install -y -qq git curl build-essential sqlite3 > /dev/null
 
 # 2. Install Go (if not present)
 echo "[2/10] Checking Go..."
-if ! command -v go &> /dev/null; then
-  echo "  Installing Go 1.22..."
-  wget -q https://go.dev/dl/go1.22.linux-amd64.tar.gz -O /tmp/go.tar.gz
+if ! command -v go &> /dev/null || [[ "$(go version)" != *"go1.25"* && "$(go version)" != *"go1.26"* ]]; then
+  echo "  Installing Go 1.25..."
+  wget -q https://go.dev/dl/go1.25.8.linux-amd64.tar.gz -O /tmp/go.tar.gz
+  rm -rf /usr/local/go
   tar -C /usr/local -xzf /tmp/go.tar.gz
   rm /tmp/go.tar.gz
   export PATH=$PATH:/usr/local/go/bin
@@ -51,9 +52,12 @@ else
   cd "$INSTALL_DIR"
 fi
 
-# 5. Build Go bridge
+# 5. Build Go bridge (fetch latest whatsmeow before building)
 echo "[5/10] Building Go bridge..."
 cd "$INSTALL_DIR/bridge"
+echo "  Fetching latest whatsmeow..."
+GOFLAGS="-mod=mod" go get go.mau.fi/whatsmeow@latest 2>&1 | tail -1
+go mod tidy
 CGO_ENABLED=1 go build -o wactl-bridge .
 
 # 6. Build TS server
