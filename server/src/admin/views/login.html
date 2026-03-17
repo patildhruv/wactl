@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>wactl — Login</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0f172a; color: #e2e8f0;
+      display: flex; align-items: center; justify-content: center;
+      min-height: 100vh;
+    }
+    .card {
+      background: #1e293b; border-radius: 12px; padding: 2rem;
+      width: 100%; max-width: 380px; box-shadow: 0 4px 24px rgba(0,0,0,0.3);
+    }
+    h1 { font-size: 1.5rem; margin-bottom: 1.5rem; text-align: center; }
+    h1 span { color: #22d3ee; }
+    .field { margin-bottom: 1rem; }
+    label { display: block; font-size: 0.875rem; color: #94a3b8; margin-bottom: 0.25rem; }
+    input {
+      width: 100%; padding: 0.625rem 0.75rem; border: 1px solid #334155;
+      background: #0f172a; color: #e2e8f0; border-radius: 6px; font-size: 1rem;
+    }
+    input:focus { outline: none; border-color: #22d3ee; }
+    button {
+      width: 100%; padding: 0.75rem; background: #22d3ee; color: #0f172a;
+      border: none; border-radius: 6px; font-size: 1rem; font-weight: 600;
+      cursor: pointer; margin-top: 0.5rem;
+    }
+    button:hover { background: #06b6d4; }
+    .error { color: #f87171; font-size: 0.875rem; margin-top: 0.75rem; text-align: center; display: none; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1><span>wactl</span> Admin</h1>
+    <form id="loginForm">
+      <div class="field">
+        <label for="username">Username</label>
+        <input type="text" id="username" name="username" required autocomplete="username">
+      </div>
+      <div class="field">
+        <label for="password">Password</label>
+        <input type="password" id="password" name="password" required autocomplete="current-password">
+      </div>
+      <button type="submit">Sign In</button>
+      <div class="error" id="error"></div>
+    </form>
+  </div>
+  <script>
+    document.getElementById('loginForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const errEl = document.getElementById('error');
+      errEl.style.display = 'none';
+      try {
+        const res = await fetch('/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            username: document.getElementById('username').value,
+            password: document.getElementById('password').value,
+          }),
+        });
+        if (res.ok) {
+          window.location.href = '/';
+        } else {
+          const data = await res.json();
+          errEl.textContent = data.error || 'Login failed';
+          errEl.style.display = 'block';
+        }
+      } catch (err) {
+        errEl.textContent = 'Connection error';
+        errEl.style.display = 'block';
+      }
+    });
+  </script>
+</body>
+</html>
