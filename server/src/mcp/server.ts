@@ -6,115 +6,123 @@ import { randomUUID } from "crypto";
 import { z } from "zod";
 import { BridgeClient } from "../bridge/client";
 import { validateApiKey } from "./auth";
-import { executeTool, toolDefinitions } from "./tools";
+import { executeTool } from "./tools";
+
+/**
+ * Creates a fresh McpServer with all WhatsApp tools registered.
+ * Must be called once per transport connection — the SDK requires
+ * a separate McpServer instance per transport.
+ */
+function createMcpServer(bridge: BridgeClient): McpServer {
+  const server = new McpServer({
+    name: "wactl",
+    version: "0.1.0",
+  });
+
+  server.tool(
+    "list_chats",
+    "List all WhatsApp conversations with last message preview",
+    { limit: z.number().optional().describe("Maximum number of chats to return") },
+    async (args) => {
+      const result = await executeTool(bridge, "list_chats", args);
+      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+    }
+  );
+
+  server.tool(
+    "get_chat",
+    "Get message history for a specific chat",
+    {
+      chatId: z.string().describe("The chat JID"),
+      limit: z.number().optional().describe("Maximum number of messages"),
+    },
+    async (args) => {
+      const result = await executeTool(bridge, "get_chat", args);
+      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+    }
+  );
+
+  server.tool(
+    "search_contacts",
+    "Search contacts by name or phone number",
+    { query: z.string().describe("Search term") },
+    async (args) => {
+      const result = await executeTool(bridge, "search_contacts", args);
+      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+    }
+  );
+
+  server.tool(
+    "send_message",
+    "Send a text message to a WhatsApp contact or group",
+    {
+      to: z.string().describe("Recipient JID or phone number"),
+      body: z.string().describe("Message text"),
+    },
+    async (args) => {
+      const result = await executeTool(bridge, "send_message", args);
+      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+    }
+  );
+
+  server.tool(
+    "send_file",
+    "Send a file or image to a WhatsApp contact or group",
+    {
+      to: z.string().describe("Recipient JID or phone number"),
+      filePath: z.string().describe("Absolute path to the file"),
+      caption: z.string().optional().describe("Optional caption"),
+    },
+    async (args) => {
+      const result = await executeTool(bridge, "send_file", args);
+      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+    }
+  );
+
+  server.tool(
+    "download_media",
+    "Download media from a message",
+    { messageId: z.string().describe("The message ID") },
+    async (args) => {
+      const result = await executeTool(bridge, "download_media", args);
+      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+    }
+  );
+
+  server.tool(
+    "get_connection_status",
+    "Check WhatsApp bridge connection status",
+    {},
+    async (args) => {
+      const result = await executeTool(bridge, "get_connection_status", args);
+      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+    }
+  );
+
+  return server;
+}
+
+interface StreamableSession {
+  server: McpServer;
+  transport: StreamableHTTPServerTransport;
+}
+
+interface SSESession {
+  server: McpServer;
+  transport: SSEServerTransport;
+}
 
 export class MCPServerWrapper {
-  private server: McpServer;
   private bridge: BridgeClient;
   private apiKey: string;
   private basePath: string;
-  private transports: Map<string, SSEServerTransport> = new Map();
-  private streamableSessions: Map<string, StreamableHTTPServerTransport> = new Map();
+  private sseSessions: Map<string, SSESession> = new Map();
+  private streamableSessions: Map<string, StreamableSession> = new Map();
 
   constructor(bridge: BridgeClient, apiKey: string, basePath: string = "") {
     this.bridge = bridge;
     this.apiKey = apiKey;
     this.basePath = basePath;
-    this.server = new McpServer({
-      name: "wactl",
-      version: "0.1.0",
-    });
-
-    this.registerTools();
-  }
-
-  private registerTools(): void {
-    // list_chats
-    this.server.tool(
-      "list_chats",
-      "List all WhatsApp conversations with last message preview",
-      { limit: z.number().optional().describe("Maximum number of chats to return") },
-      async (args) => {
-        const result = await executeTool(this.bridge, "list_chats", args);
-        return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
-      }
-    );
-
-    // get_chat
-    this.server.tool(
-      "get_chat",
-      "Get message history for a specific chat",
-      {
-        chatId: z.string().describe("The chat JID"),
-        limit: z.number().optional().describe("Maximum number of messages"),
-      },
-      async (args) => {
-        const result = await executeTool(this.bridge, "get_chat", args);
-        return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
-      }
-    );
-
-    // search_contacts
-    this.server.tool(
-      "search_contacts",
-      "Search contacts by name or phone number",
-      { query: z.string().describe("Search term") },
-      async (args) => {
-        const result = await executeTool(this.bridge, "search_contacts", args);
-        return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
-      }
-    );
-
-    // send_message
-    this.server.tool(
-      "send_message",
-      "Send a text message to a WhatsApp contact or group",
-      {
-        to: z.string().describe("Recipient JID or phone number"),
-        body: z.string().describe("Message text"),
-      },
-      async (args) => {
-        const result = await executeTool(this.bridge, "send_message", args);
-        return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
-      }
-    );
-
-    // send_file
-    this.server.tool(
-      "send_file",
-      "Send a file or image to a WhatsApp contact or group",
-      {
-        to: z.string().describe("Recipient JID or phone number"),
-        filePath: z.string().describe("Absolute path to the file"),
-        caption: z.string().optional().describe("Optional caption"),
-      },
-      async (args) => {
-        const result = await executeTool(this.bridge, "send_file", args);
-        return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
-      }
-    );
-
-    // download_media
-    this.server.tool(
-      "download_media",
-      "Download media from a message",
-      { messageId: z.string().describe("The message ID") },
-      async (args) => {
-        const result = await executeTool(this.bridge, "download_media", args);
-        return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
-      }
-    );
-
-    // get_connection_status
-    this.server.tool(
-      "get_connection_status",
-      "Check WhatsApp bridge connection status",
-      {},
-      async (args) => {
-        const result = await executeTool(this.bridge, "get_connection_status", args);
-        return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
-      }
-    );
   }
 
   async handleSSE(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -124,14 +132,15 @@ export class MCPServerWrapper {
       return;
     }
 
+    const server = createMcpServer(this.bridge);
     const transport = new SSEServerTransport(`${this.basePath}/mcp/messages`, res);
-    this.transports.set(transport.sessionId, transport);
+    this.sseSessions.set(transport.sessionId, { server, transport });
 
     res.on("close", () => {
-      this.transports.delete(transport.sessionId);
+      this.sseSessions.delete(transport.sessionId);
     });
 
-    await this.server.connect(transport);
+    await server.connect(transport);
   }
 
   async handleMessages(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -144,14 +153,14 @@ export class MCPServerWrapper {
       return;
     }
 
-    const transport = this.transports.get(sessionId);
-    if (!transport) {
+    const session = this.sseSessions.get(sessionId);
+    if (!session) {
       res.writeHead(404, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "Session not found" }));
       return;
     }
 
-    await transport.handlePostMessage(req, res);
+    await session.transport.handlePostMessage(req, res);
   }
 
   async handleStreamableHTTP(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -164,13 +173,14 @@ export class MCPServerWrapper {
     // Check for existing session
     const sessionId = req.headers["mcp-session-id"] as string | undefined;
     if (sessionId && this.streamableSessions.has(sessionId)) {
-      const transport = this.streamableSessions.get(sessionId)!;
-      await transport.handleRequest(req, res, (req as any).body);
+      const session = this.streamableSessions.get(sessionId)!;
+      await session.transport.handleRequest(req, res, (req as any).body);
       return;
     }
 
-    // New session — only allowed via POST (initialization)
+    // New session — only via POST (initialization)
     if (req.method === "POST") {
+      const server = createMcpServer(this.bridge);
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
       });
@@ -181,22 +191,21 @@ export class MCPServerWrapper {
         }
       };
 
-      await this.server.connect(transport);
+      await server.connect(transport);
       await transport.handleRequest(req, res, (req as any).body);
 
       if (transport.sessionId) {
-        this.streamableSessions.set(transport.sessionId, transport);
+        this.streamableSessions.set(transport.sessionId, { server, transport });
       }
       return;
     }
 
-    // GET/DELETE without session — not valid
     res.writeHead(400, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "Missing or invalid Mcp-Session-Id header" }));
   }
 
   getConnectedClients(): number {
-    return this.transports.size + this.streamableSessions.size;
+    return this.sseSessions.size + this.streamableSessions.size;
   }
 
   getApiKey(): string {
