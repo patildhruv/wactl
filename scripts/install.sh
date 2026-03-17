@@ -4,7 +4,9 @@ set -e
 # wactl — Multi-Instance Installer with HTTPS via Caddy
 # Usage:
 #   First install:  sudo bash install.sh --name dhruv --hostname wactl.example.com
+#   With ntfy:      sudo bash install.sh --name dhruv --hostname wactl.example.com --ntfy my-wactl-alerts
 #   Add instance:   sudo bash install.sh --name dad
+#   Add with ntfy:  sudo bash install.sh --name dad --ntfy dads-wactl
 #   Remove instance: sudo bash install.sh --remove --name dad
 
 INSTALL_DIR="/opt/wactl"
@@ -16,12 +18,14 @@ CADDYFILE="$INSTALL_DIR/Caddyfile"
 # ---------------------------------------------------------------------------
 NAME=""
 HOSTNAME=""
+NTFY_TOPIC=""
 REMOVE=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --name) NAME="$2"; shift 2 ;;
     --hostname) HOSTNAME="$2"; shift 2 ;;
+    --ntfy) NTFY_TOPIC="$2"; shift 2 ;;
     --remove) REMOVE=true; shift ;;
     *) echo "Unknown option: $1"; exit 1 ;;
   esac
@@ -302,6 +306,13 @@ MCP_KEY=$(openssl rand -hex 32)
 ADMIN_PASS=$(openssl rand -base64 12)
 ADMIN_HASH=$(cd "$INSTALL_DIR/server" && node -e "const b=require('bcryptjs');console.log(b.hashSync('$ADMIN_PASS',12))")
 
+# Determine notification method
+if [ -n "$NTFY_TOPIC" ]; then
+  NOTIFY_METHOD="ntfy"
+else
+  NOTIFY_METHOD="none"
+fi
+
 # Write instance .env
 cat > "$INSTANCE_DIR/.env" << EOF
 MCP_API_KEY=$MCP_KEY
@@ -315,7 +326,9 @@ DATA_DIR=$INSTANCE_DIR/data
 BRIDGE_DIR=$INSTALL_DIR/bridge
 BASE_PATH=/$NAME
 ENV_FILE_PATH=$INSTANCE_DIR/.env
-NOTIFY_METHOD=none
+NOTIFY_METHOD=${NOTIFY_METHOD}
+NTFY_TOPIC=${NTFY_TOPIC}
+SERVER_HOSTNAME=${HOSTNAME}
 AUTO_UPDATE=true
 EOF
 
@@ -455,6 +468,12 @@ echo "      }"
 echo "    }"
 echo "  }"
 echo ""
+if [ -n "$NTFY_TOPIC" ]; then
+  echo "  Notifications: ntfy.sh/$NTFY_TOPIC"
+  echo "  Subscribe:     https://ntfy.sh/$NTFY_TOPIC"
+  echo "                 (or install ntfy app and add topic)"
+  echo ""
+fi
 echo "  Save these credentials — the password"
 echo "  cannot be recovered after this screen."
 echo "============================================"

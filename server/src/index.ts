@@ -41,6 +41,8 @@ const notifier = new Notifier({
   method: process.env.NOTIFY_METHOD || "none",
   ntfyTopic: process.env.NTFY_TOPIC,
   serverIP: process.env.SERVER_IP,
+  serverHostname: process.env.SERVER_HOSTNAME,
+  basePath: BASE_PATH,
   adminPort: ADMIN_PORT,
 });
 
