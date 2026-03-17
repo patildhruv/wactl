@@ -36,7 +36,7 @@ fs.mkdirSync(DATA_DIR, { recursive: true });
 
 // Initialize components
 const bridge = new BridgeClient(BRIDGE_PORT);
-const mcpServer = new MCPServerWrapper(bridge, MCP_API_KEY);
+const mcpServer = new MCPServerWrapper(bridge, MCP_API_KEY, BASE_PATH);
 const notifier = new Notifier({
   method: process.env.NOTIFY_METHOD || "none",
   ntfyTopic: process.env.NTFY_TOPIC,
