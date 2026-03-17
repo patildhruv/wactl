@@ -1,0 +1,35 @@
+{
+  "name": "wactl-server",
+  "version": "0.1.0",
+  "description": "wactl MCP + Admin server",
+  "main": "dist/index.js",
+  "bin": {
+    "wactl": "dist/cli/wactl.js"
+  },
+  "scripts": {
+    "build": "tsc && cp -r src/admin/views dist/admin/views",
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts",
+    "cli": "node dist/cli/wactl.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "bcryptjs": "^2.4.3",
+    "boxen": "^5.1.2",
+    "chalk": "^4.1.2",
+    "commander": "^12.1.0",
+    "cookie-parser": "^1.4.7",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "express-rate-limit": "^7.5.0",
+    "uuid": "^11.1.0"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/cookie-parser": "^1.4.8",
+    "@types/express": "^5.0.2",
+    "@types/node": "^22.13.14",
+    "@types/uuid": "^10.0.0",
+    "typescript": "^5.8.2"
+  }
+}
