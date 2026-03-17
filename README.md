@@ -1,65 +1,60 @@
-# wactl
+<p align="center">
+  <h1 align="center">wactl</h1>
+  <p align="center">
+    <strong>Your WhatsApp, wired directly into your LLM.</strong>
+    <br />
+    Self-hosted · MCP-native · Zero babysitting
+    <br /><br />
+    <a href="#quick-start">Quick Start</a> · <a href="#features">Features</a> · <a href="MAINTENANCE.md">Maintenance Guide</a> · <a href="#architecture">Architecture</a>
+  </p>
+</p>
 
-> A production-ready, self-hosted WhatsApp MCP server with a web-based admin panel, API key authentication, auto-updater, and one-click deployment.
+<br />
 
-Originally forked from [lharries/whatsapp-mcp](https://github.com/lharries/whatsapp-mcp).
+> **wactl** is a production-grade WhatsApp bridge that connects your personal WhatsApp account to any MCP-compatible LLM client — Claude Desktop, Cursor, VS Code Copilot, you name it. Deploy it on a server and forget about it. It updates itself, heals itself, and yells at you (via push notification) only when it genuinely needs you.
+
+Originally forked from [lharries/whatsapp-mcp](https://github.com/lharries/whatsapp-mcp). Rewritten from scratch.
 
 ---
 
-## What This Is
+## The Problem
 
-wactl is a WhatsApp bridge that connects your personal WhatsApp account to any MCP-compatible LLM client (Claude Desktop, Cursor, VS Code Copilot, etc.). Unlike other projects, wactl is designed for **unattended server deployment** — no SSH needed to re-authenticate, no manual restarts, no babysitting.
+Every WhatsApp MCP server has the same three failure modes:
 
-## Why This Exists
+1. **WhatsApp pushes an update** → your bridge silently dies → you find out 3 days later
+2. **No auth on the MCP endpoint** → anyone on your network can read your chats
+3. **QR code expires** → SSH in, restart, scan QR from terminal, pray
 
-Every WhatsApp MCP server out there has the same problems:
+wactl solves all three. Auto-updates, API key auth, and a web-based admin panel for QR re-authentication — no SSH required.
 
-- WhatsApp updates break the session → you SSH in, regenerate QR, restart
-- No auth on the MCP endpoint → anyone on the network can read your chats
-- No update mechanism → you find out it's broken only when it stops working
-
-wactl fixes all of that.
+---
 
 ## Features
 
-- **WhatsApp ↔ LLM Bridge** — Read messages, search contacts, send messages, download media — all via MCP tools
-- **Web Admin Panel** — Browser-based QR authentication with bcrypt password protection. No SSH required to re-login
-- **API Key Authentication** — Secure your MCP endpoint with an API key. Only authorized LLM clients can connect
-- **Auto-Updater** — Daily check for whatsmeow updates. Auto-pulls, rebuilds, self-tests, and restarts. Alerts you if manual intervention is needed
-- **Push Notifications** — ntfy.sh integration alerts you when QR re-scan is needed
-- **CLI Management** — `wactl status`, `wactl logs`, `wactl restart` — manage from terminal
-- **Docker Support** — Multi-stage Dockerfile + docker-compose for multi-account deployment
-- **One-Click Install** — Single bash script sets up everything on Ubuntu/Debian
+| | |
+|---|---|
+| 🔌 **WhatsApp ↔ LLM Bridge** | Read messages, search contacts, send messages, download media — all via MCP tools |
+| 🖥️ **Web Admin Panel** | Browser-based QR login with bcrypt auth. Re-authenticate from your phone, not your terminal |
+| 🔐 **API Key Auth** | Every MCP request requires `X-API-Key`. No key, no access |
+| 🔄 **Self-Healing Updates** | Daily cron fetches latest whatsmeow, builds, self-tests, and hot-swaps the binary. Rolls back on failure |
+| 📲 **Push Notifications** | [ntfy.sh](https://ntfy.sh) alerts when QR re-scan is needed or updates fail |
+| 🛠️ **CLI** | `wactl status`, `wactl logs`, `wactl restart` — everything from terminal |
+| 🐳 **Docker** | Multi-stage build + docker-compose for multi-account setups |
+| ⚡ **One-Command Install** | Single `curl` command sets up everything on Ubuntu/Debian |
 
-## Architecture
-
-```
-┌──────────────────────────────────────────────────┐
-│  PROCESS 1: Go Binary (wactl-bridge)             │
-│  - whatsmeow client (WhatsApp multi-device API)  │
-│  - SQLite session + message store                │
-│  - HTTP API on localhost:4000 (internal only)    │
-└────────────────────┬─────────────────────────────┘
-                     │ http://localhost:4000
-┌────────────────────▼─────────────────────────────┐
-│  PROCESS 2: TypeScript Server (wactl-server)     │
-│  - MCP server (JSON-RPC over SSE, port 3000)     │
-│  - Web admin panel (port 8080)                   │
-│  - ntfy.sh push notifications                    │
-│  - Auto-updater (daily cron)                     │
-│  - CLI wrapper (wactl command)                   │
-└──────────────────────────────────────────────────┘
-```
+---
 
 ## Quick Start
 
-### One-Click Install (Ubuntu/Debian)
+### One-Command Install
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/patildhruv/wactl/main/scripts/install.sh | sudo bash
 ```
 
-Or clone and run manually:
+That's it. The script installs Go 1.25+, Node.js 20, fetches the latest whatsmeow, builds everything, generates credentials, creates systemd services, and starts it all up. Your credentials are printed once — save them.
+
+### Or Clone Manually
 
 ```bash
 git clone https://github.com/patildhruv/wactl.git
@@ -67,41 +62,31 @@ cd wactl
 sudo bash scripts/install.sh
 ```
 
-The install script will:
-
-1. Install system dependencies (Go, Node.js, SQLite)
-2. Build the Go bridge and TypeScript server
-3. Generate random MCP API key and admin password
-4. Create systemd services
-5. Configure firewall rules
-6. Start services and print your credentials
-
 ### Docker
 
 ```bash
-# Build
 cd docker
-docker compose build
-
-# Configure
 cp ../.env.example ../envs/primary.env
-# Edit envs/primary.env with your credentials
-
-# Run
+# Edit envs/primary.env with your settings
 docker compose up -d
 ```
 
-### First-Time Authentication
+---
+
+## First-Time Setup
 
 1. Open `http://<your-server-ip>:8080` in your browser
-2. Log in with the admin credentials
-3. Go to **QR Auth** page
-4. Scan the QR code with WhatsApp (Linked Devices → Link a Device)
-5. Done. The session persists across restarts
+2. Log in with the admin credentials (printed during install)
+3. Navigate to **QR Auth**
+4. Open WhatsApp on your phone → **Linked Devices** → **Link a Device**
+5. Scan the QR code
+6. Done. Session persists across restarts
 
-### Connect Your LLM Client
+---
 
-Add to your MCP client config (e.g., `claude_desktop_config.json`):
+## Connect Your LLM Client
+
+Add to your MCP client config (e.g., Claude Desktop):
 
 ```json
 {
@@ -116,78 +101,151 @@ Add to your MCP client config (e.g., `claude_desktop_config.json`):
 }
 ```
 
+Now ask Claude: *"Summarize my unread WhatsApp messages"* — and it just works.
+
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────┐
+│            PROCESS 1: Go Bridge (port 4000)          │
+│                                                     │
+│   whatsmeow ←→ WhatsApp Web multi-device protocol  │
+│   SQLite store (sessions + messages)                │
+│   REST API (localhost only — not exposed)           │
+└──────────────────────┬──────────────────────────────┘
+                       │ HTTP (internal)
+┌──────────────────────▼──────────────────────────────┐
+│            PROCESS 2: TS Server                      │
+│                                                     │
+│   MCP Server ─── JSON-RPC over SSE (port 3000)     │
+│   Admin Panel ── Web UI + QR auth (port 8080)      │
+│   Callbacks ──── Bridge event handler (port 4001)  │
+│   Updater ────── Daily whatsmeow auto-update       │
+│   CLI ────────── wactl command wrapper             │
+│   Notify ─────── ntfy.sh push notifications        │
+└─────────────────────────────────────────────────────┘
+```
+
+---
+
 ## Configuration
 
-Copy `.env.example` to `.env` and edit:
+Copy `.env.example` to `.env` and configure:
 
 | Variable | Description | Default |
-|----------|-------------|---------|
-| `MCP_API_KEY` | API key for MCP endpoint authentication | Auto-generated |
+|---|---|---|
+| `MCP_API_KEY` | API key for MCP endpoint | Auto-generated |
 | `ADMIN_PASSWORD_HASH` | bcrypt hash of admin password | Auto-generated |
 | `ADMIN_USER` | Admin panel username | `admin` |
 | `ADMIN_PORT` | Web admin panel port | `8080` |
 | `MCP_PORT` | MCP SSE server port | `3000` |
-| `BRIDGE_PORT` | Internal Go bridge port (localhost only) | `4000` |
+| `BRIDGE_PORT` | Internal Go bridge port | `4000` |
 | `NOTIFY_METHOD` | `ntfy` or `none` | `none` |
 | `NTFY_TOPIC` | ntfy.sh topic name | — |
-| `AUTO_UPDATE` | Enable daily auto-update checks | `true` |
-| `AUTO_UPDATE_CRON` | Cron schedule for update checks | `0 3 * * *` |
+| `AUTO_UPDATE` | Enable daily update checks | `true` |
+| `AUTO_UPDATE_CRON` | Cron schedule for updates | `0 3 * * *` |
 | `DATA_DIR` | Path to SQLite + session data | `./data` |
 
-## CLI Usage
+---
+
+## CLI
 
 ```bash
-wactl status     # Show connection health, uptime, MCP status
-wactl logs       # Tail live logs (systemd)
-wactl restart    # Restart bridge and server
+wactl status     # Connection health, uptime, MCP status
+wactl logs       # Tail live logs
+wactl restart    # Restart bridge + server
 wactl update     # Trigger manual update check
-wactl auth       # Show QR status + admin panel URL
+wactl auth       # QR status + admin panel URL
 wactl config     # Print current config (secrets redacted)
 ```
 
+---
+
 ## MCP Tools
 
-| Tool | Description | Parameters |
-|------|-------------|------------|
+These are the tools your LLM client gets access to:
+
+| Tool | What It Does | Parameters |
+|---|---|---|
 | `list_chats` | List all conversations | `limit?: number` |
-| `get_chat` | Get message history | `chatId: string, limit?: number` |
-| `search_contacts` | Search contacts | `query: string` |
-| `send_message` | Send text message | `to: string, body: string` |
-| `send_file` | Send file/image | `to: string, filePath: string, caption?: string` |
-| `download_media` | Download media | `messageId: string` |
-| `get_connection_status` | Check bridge status | — |
+| `get_chat` | Get message history for a chat | `chatId: string, limit?: number` |
+| `search_contacts` | Search contacts by name/number | `query: string` |
+| `send_message` | Send a text message | `to: string, body: string` |
+| `send_file` | Send a file or image | `to: string, filePath: string, caption?: string` |
+| `download_media` | Download media from a message | `messageId: string` |
+| `get_connection_status` | Check if bridge is connected | — |
+
+---
 
 ## Project Structure
 
 ```
 wactl/
-├── bridge/               # Go binary — WhatsApp bridge
-│   ├── main.go           # Entry point, connection setup
-│   ├── handlers.go       # Event handlers (QR, messages, history sync)
-│   ├── api.go            # HTTP API routes
-│   └── store.go          # SQLite operations
-├── server/               # TypeScript — everything else
-│   ├── src/
-│   │   ├── index.ts      # Entry point (starts MCP + admin servers)
-│   │   ├── mcp/          # MCP JSON-RPC server + tools + auth
-│   │   ├── admin/        # Admin panel routes + views
-│   │   ├── bridge/       # HTTP client for Go bridge API
-│   │   ├── notify/       # ntfy.sh push notifications
-│   │   ├── updater/      # Auto-update logic
-│   │   └── cli/          # CLI wrapper (wactl command)
-├── docker/               # Dockerfile + docker-compose
-├── scripts/              # Install script + update-check
+├── bridge/                 # Go — WhatsApp protocol bridge
+│   ├── main.go             # Entry point, whatsmeow client setup
+│   ├── handlers.go         # Event handlers (QR, messages, history sync)
+│   ├── api.go              # Internal REST API
+│   └── store.go            # SQLite operations
+├── server/                 # TypeScript — MCP + admin + everything else
+│   └── src/
+│       ├── index.ts        # Entry point
+│       ├── mcp/            # MCP JSON-RPC server + tool definitions
+│       ├── admin/          # Admin panel (routes + EJS views)
+│       ├── bridge/         # HTTP client for Go bridge API
+│       ├── notify/         # ntfy.sh integration
+│       ├── updater/        # Auto-update logic
+│       └── cli/            # CLI (wactl command)
+├── docker/                 # Dockerfile + docker-compose
+│   ├── Dockerfile          # Multi-stage (Go builder → Node builder → runtime)
+│   ├── docker-compose.yml  # Multi-account support
+│   └── entrypoint.sh
+├── scripts/
+│   ├── install.sh          # One-command installer
+│   └── update-check.sh     # Auto-updater (cron)
+├── MAINTENANCE.md          # ← You should read this
 ├── .env.example
 ├── CONTRIBUTING.md
 └── LICENSE
 ```
 
+---
+
 ## Security
 
-- **Admin panel** — Password is bcrypt hashed. Sessions expire after 24h. Rate-limited login (5 attempts/min)
-- **MCP endpoint** — Requires `X-API-Key` header on every request
-- **Bridge API** — Listens only on localhost:4000, not externally accessible
-- **WhatsApp data** — All messages stored locally in SQLite. Nothing leaves your server
+- **Admin panel** — bcrypt-hashed passwords, 24h session expiry, rate-limited login (5 attempts/min)
+- **MCP endpoint** — `X-API-Key` header required on every request
+- **Bridge API** — binds to `localhost:4000` only, never exposed externally
+- **Data** — all messages stored locally in SQLite, nothing phones home
+
+---
+
+## Maintenance
+
+wactl is built on an unofficial WhatsApp API. Things will break. That's expected.
+
+Read **[MAINTENANCE.md](MAINTENANCE.md)** for:
+- What breaks and why (spoiler: WhatsApp updates, every time)
+- Known whatsmeow breaking change patterns
+- The auto-updater's logic and its limits
+- Manual update procedures
+- Emergency playbook for "everything is down"
+- Database backup and migration
+
+---
+
+## Troubleshooting
+
+| Problem | Quick Fix |
+|---|---|
+| `Client outdated (405)` | `cd /opt/wactl/bridge && GOFLAGS="-mod=mod" go get go.mau.fi/whatsmeow@latest && go mod tidy && CGO_ENABLED=1 go build -o wactl-bridge . && systemctl restart wactl-bridge` |
+| QR won't scan | Update WhatsApp on your phone. Remove a linked device if you have 4. |
+| Disconnects after ~20 min | Update whatsmeow (see above). Check WhatsApp phone app is updated. |
+| Build fails after update | Likely a `context.Context` parameter change — see [MAINTENANCE.md](MAINTENANCE.md#whatsmeow-breaking-changes) |
+| Empty chat list | Wait 2-5 minutes after first connection for history sync |
+
+---
 
 ## License
 
