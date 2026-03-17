@@ -10,11 +10,13 @@ export class MCPServerWrapper {
   private server: McpServer;
   private bridge: BridgeClient;
   private apiKey: string;
+  private basePath: string;
   private transports: Map<string, SSEServerTransport> = new Map();
 
-  constructor(bridge: BridgeClient, apiKey: string) {
+  constructor(bridge: BridgeClient, apiKey: string, basePath: string = "") {
     this.bridge = bridge;
     this.apiKey = apiKey;
+    this.basePath = basePath;
     this.server = new McpServer({
       name: "wactl",
       version: "0.1.0",
@@ -119,7 +121,7 @@ export class MCPServerWrapper {
       return;
     }
 
-    const transport = new SSEServerTransport("/mcp/messages", res);
+    const transport = new SSEServerTransport(`${this.basePath}/mcp/messages`, res);
     this.transports.set(transport.sessionId, transport);
 
     res.on("close", () => {
