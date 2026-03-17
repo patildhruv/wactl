@@ -152,4 +152,12 @@ export class MCPServerWrapper {
   getConnectedClients(): number {
     return this.transports.size;
   }
+
+  getApiKey(): string {
+    return this.apiKey;
+  }
+
+  updateApiKey(newKey: string): void {
+    this.apiKey = newKey;
+  }
 }

@@ -1,6 +1,7 @@
 import express, { Request, Response, NextFunction } from "express";
 import path from "path";
 import fs from "fs";
+import crypto from "crypto";
 import cookieParser from "cookie-parser";
 import {
   checkRateLimit,
@@ -22,6 +23,7 @@ export function createAdminRouter(
     adminPasswordHash: string;
     mcpPort: number;
     dataDir: string;
+    envFilePath: string;
   }
 ): express.Router {
   const router = express.Router();
@@ -30,6 +32,7 @@ export function createAdminRouter(
   const loginHTML = fs.readFileSync(path.join(VIEWS_DIR, "login.html"), "utf-8");
   const dashboardHTML = fs.readFileSync(path.join(VIEWS_DIR, "dashboard.html"), "utf-8");
   const qrAuthHTML = fs.readFileSync(path.join(VIEWS_DIR, "qr-auth.html"), "utf-8");
+  const settingsHTML = fs.readFileSync(path.join(VIEWS_DIR, "settings.html"), "utf-8");
 
   // Check if request is from localhost (used for CLI access without auth)
   function isLocalhost(req: Request): boolean {
@@ -113,6 +116,10 @@ export function createAdminRouter(
     res.type("html").send(qrAuthHTML);
   });
 
+  router.get("/settings", requireAuth, (_req: Request, res: Response) => {
+    res.type("html").send(settingsHTML);
+  });
+
   // --- API routes (protected) ---
 
   router.get("/api/status", requireAuthOrLocal, async (_req: Request, res: Response) => {
@@ -159,6 +166,45 @@ export function createAdminRouter(
       res.json({ ok: true });
     } catch (err) {
       res.status(500).json({ error: "Failed to logout bridge" });
+    }
+  });
+
+  // --- Settings API routes (require full auth — no localhost bypass) ---
+
+  router.get("/api/settings", requireAuth, (_req: Request, res: Response) => {
+    res.json({
+      apiKey: mcpServer.getApiKey(),
+      mcpPort: config.mcpPort,
+    });
+  });
+
+  router.post("/api/settings/regenerate-key", requireAuth, express.json(), (_req: Request, res: Response) => {
+    try {
+      const newKey = crypto.randomBytes(32).toString("hex");
+
+      // Update .env file on disk
+      let envContent = "";
+      try {
+        envContent = fs.readFileSync(config.envFilePath, "utf-8");
+      } catch {
+        res.status(500).json({ error: "Could not read .env file" });
+        return;
+      }
+
+      if (envContent.includes("MCP_API_KEY=")) {
+        envContent = envContent.replace(/^MCP_API_KEY=.*$/m, `MCP_API_KEY=${newKey}`);
+      } else {
+        envContent += `\nMCP_API_KEY=${newKey}\n`;
+      }
+
+      fs.writeFileSync(config.envFilePath, envContent, "utf-8");
+
+      // Update live MCP server
+      mcpServer.updateApiKey(newKey);
+
+      res.json({ apiKey: newKey });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to regenerate API key" });
     }
   });
 
