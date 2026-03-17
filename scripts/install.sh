@@ -34,7 +34,24 @@ done
 # ---------------------------------------------------------------------------
 # Validation helpers
 # ---------------------------------------------------------------------------
-die() { echo "ERROR: $*" >&2; exit 1; }
+die() { echo ""; echo "ERROR: $*" >&2; exit 1; }
+warn() { echo "  WARNING: $*" >&2; }
+
+LOG_FILE="/tmp/wactl-install-$(date +%Y%m%d-%H%M%S).log"
+run_logged() {
+  # Run a command, show output on failure. Usage: run_logged "description" command args...
+  local desc="$1"; shift
+  if ! "$@" >> "$LOG_FILE" 2>&1; then
+    echo ""
+    echo "  FAILED: $desc"
+    echo "  Command: $*"
+    echo "  --- Last 30 lines of output ---"
+    tail -30 "$LOG_FILE"
+    echo "  --- End of output ---"
+    echo "  Full log: $LOG_FILE"
+    return 1
+  fi
+}
 
 validate_name() {
   [[ -n "$1" ]] || die "--name is required"
@@ -171,6 +188,7 @@ else
 fi
 echo "  Instance: $NAME"
 echo "  Hostname: $HOSTNAME"
+echo "  Log file: $LOG_FILE"
 echo ""
 
 # ---------------------------------------------------------------------------
@@ -181,8 +199,8 @@ if [ "$FIRST_RUN" = true ]; then
 
   # 1. System dependencies
   echo "[1/${TOTAL_STEPS}] Installing system dependencies..."
-  apt-get update -qq
-  apt-get install -y -qq git curl build-essential sqlite3 jq debian-keyring debian-archive-keyring apt-transport-https > /dev/null
+  run_logged "apt-get update" apt-get update -qq || die "apt-get update failed"
+  run_logged "install packages" apt-get install -y -qq git curl build-essential sqlite3 jq debian-keyring debian-archive-keyring apt-transport-https || die "Package installation failed"
 
   # 2. Install Go
   echo "[2/${TOTAL_STEPS}] Checking Go..."
@@ -242,16 +260,78 @@ if [ "$FIRST_RUN" = true ]; then
   # 6. Build Go bridge
   echo "[6/${TOTAL_STEPS}] Building Go bridge..."
   cd "$INSTALL_DIR/bridge"
+
+  echo "  Go version: $(go version)"
+  echo "  whatsmeow (before): $(grep 'go.mau.fi/whatsmeow' go.mod | awk '{print $2}')"
+
   echo "  Fetching latest whatsmeow..."
-  GOFLAGS="-mod=mod" go get go.mau.fi/whatsmeow@latest 2>&1 | tail -1
-  go mod tidy
-  CGO_ENABLED=1 go build -o wactl-bridge .
+  if ! GOFLAGS="-mod=mod" go get go.mau.fi/whatsmeow@latest >> "$LOG_FILE" 2>&1; then
+    echo "  FAILED: Could not fetch latest whatsmeow. Continuing with pinned version..."
+    warn "go get failed — building with existing go.mod versions"
+    git checkout go.mod go.sum 2>/dev/null || true
+  fi
+
+  echo "  whatsmeow (after):  $(grep 'go.mau.fi/whatsmeow' go.mod | awk '{print $2}')"
+
+  echo "  Running go mod tidy..."
+  if ! go mod tidy >> "$LOG_FILE" 2>&1; then
+    echo "  FAILED: go mod tidy failed"
+    echo "  --- Last 20 lines ---"
+    tail -20 "$LOG_FILE"
+    echo "  --- End ---"
+    echo "  Attempting build anyway..."
+  fi
+
+  echo "  Compiling bridge binary..."
+  if ! CGO_ENABLED=1 go build -o wactl-bridge . >> "$LOG_FILE" 2>&1; then
+    echo ""
+    echo "  =========================================="
+    echo "  BUILD FAILED: Go bridge compilation error"
+    echo "  =========================================="
+    echo ""
+    echo "  --- Compiler output ---"
+    # Re-run build to capture stderr directly (go build errors go to stderr)
+    CGO_ENABLED=1 go build -o wactl-bridge . 2>&1 | head -50
+    echo "  --- End compiler output ---"
+    echo ""
+    echo "  Common fixes:"
+    echo "    1. Unused import      → Remove the unused import in the reported file"
+    echo "    2. API change          → whatsmeow updated with breaking changes;"
+    echo "                             pin to last known good version in go.mod"
+    echo "    3. Go version mismatch → Check 'go version' matches go.mod requirement"
+    echo ""
+    echo "  Full log: $LOG_FILE"
+    die "Go bridge build failed. See above for details."
+  fi
+  echo "  Bridge binary: $(ls -lh wactl-bridge | awk '{print $5}')"
 
   # 7. Build TS server
   echo "[7/${TOTAL_STEPS}] Building TypeScript server..."
   cd "$INSTALL_DIR/server"
-  npm ci --silent
-  npm run build
+
+  echo "  Installing dependencies..."
+  if ! npm ci --silent >> "$LOG_FILE" 2>&1; then
+    echo "  FAILED: npm ci"
+    echo "  --- Last 20 lines ---"
+    tail -20 "$LOG_FILE"
+    echo "  --- End ---"
+    die "npm install failed. Check Node.js version (need 20+): $(node --version 2>/dev/null || echo 'not found')"
+  fi
+
+  echo "  Compiling TypeScript..."
+  if ! npm run build >> "$LOG_FILE" 2>&1; then
+    echo ""
+    echo "  =========================================="
+    echo "  BUILD FAILED: TypeScript compilation error"
+    echo "  =========================================="
+    echo ""
+    echo "  --- Compiler output ---"
+    npm run build 2>&1 | head -50
+    echo "  --- End compiler output ---"
+    echo ""
+    echo "  Full log: $LOG_FILE"
+    die "TypeScript build failed. See above for details."
+  fi
 
   # 8. Create instance directory structure
   echo "[8/${TOTAL_STEPS}] Creating instance '$NAME'..."
@@ -442,6 +522,23 @@ echo "[${STEP_START}/${TOTAL_STEPS}] Starting services..."
 systemctl daemon-reload
 systemctl enable "wactl-${NAME}-bridge" "wactl-${NAME}-server" > /dev/null 2>&1
 systemctl start "wactl-${NAME}-bridge" "wactl-${NAME}-server"
+
+# Verify services started
+sleep 2
+BRIDGE_STATUS=$(systemctl is-active "wactl-${NAME}-bridge" 2>/dev/null || true)
+SERVER_STATUS=$(systemctl is-active "wactl-${NAME}-server" 2>/dev/null || true)
+if [ "$BRIDGE_STATUS" != "active" ]; then
+  warn "Bridge service failed to start (status: $BRIDGE_STATUS)"
+  echo "  --- Bridge logs ---"
+  journalctl -u "wactl-${NAME}-bridge" --no-pager -n 15 2>/dev/null || true
+  echo "  --- End ---"
+fi
+if [ "$SERVER_STATUS" != "active" ]; then
+  warn "Server service failed to start (status: $SERVER_STATUS)"
+  echo "  --- Server logs ---"
+  journalctl -u "wactl-${NAME}-server" --no-pager -n 15 2>/dev/null || true
+  echo "  --- End ---"
+fi
 
 # ---------------------------------------------------------------------------
 # Output credentials
