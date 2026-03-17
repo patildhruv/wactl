@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  wactl-primary:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: wactl-primary
+    env_file: ../envs/primary.env
+    volumes:
+      - primary-data:/app/data
+    ports:
+      - "8080:8080"   # Admin panel
+      - "3000:3000"   # MCP server
+    restart: unless-stopped
+
+  # Example second account (uncomment and configure)
+  # wactl-user2:
+  #   build:
+  #     context: ..
+  #     dockerfile: docker/Dockerfile
+  #   container_name: wactl-user2
+  #   env_file: ../envs/user2.env
+  #   volumes:
+  #     - user2-data:/app/data
+  #   ports:
+  #     - "8081:8080"
+  #     - "3001:3000"
+  #   restart: unless-stopped
+
+volumes:
+  primary-data:
+  # user2-data:

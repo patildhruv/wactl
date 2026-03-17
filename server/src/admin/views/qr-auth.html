@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>wactl — QR Authentication</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0f172a; color: #e2e8f0; padding: 1.5rem;
+    }
+    .header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1.5rem; }
+    .header h1 { font-size: 1.25rem; }
+    .header h1 span { color: #22d3ee; }
+    nav a { color: #94a3b8; text-decoration: none; margin-left: 1rem; font-size: 0.875rem; }
+    nav a:hover { color: #e2e8f0; }
+    nav a.active { color: #22d3ee; }
+    .center { display: flex; flex-direction: column; align-items: center; margin-top: 2rem; }
+    .qr-container {
+      background: white; padding: 1.5rem; border-radius: 12px;
+      margin-bottom: 1.5rem; min-width: 300px; min-height: 300px;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .qr-container img { max-width: 280px; max-height: 280px; }
+    .message { text-align: center; font-size: 1.1rem; margin-bottom: 1rem; }
+    .connected { color: #22c55e; }
+    .waiting { color: #eab308; }
+    #logoutBtn {
+      padding: 0.625rem 1.5rem; background: #ef4444; color: white;
+      border: none; border-radius: 6px; cursor: pointer; font-size: 0.875rem;
+    }
+    #logoutBtn:hover { background: #dc2626; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1><span>wactl</span> QR Authentication</h1>
+    <nav>
+      <a href="/">Dashboard</a>
+      <a href="/auth" class="active">QR Auth</a>
+    </nav>
+  </div>
+  <div class="center">
+    <div id="connectedView" class="hidden">
+      <p class="message connected">Already connected</p>
+      <p class="message" id="accountInfo"></p>
+      <button id="logoutBtn">Logout WhatsApp</button>
+    </div>
+    <div id="qrView" class="hidden">
+      <p class="message waiting">Scan this QR code with your WhatsApp app</p>
+      <div class="qr-container">
+        <img id="qrImage" alt="QR Code">
+      </div>
+      <p class="message" style="font-size:0.875rem;color:#64748b;">QR refreshes automatically</p>
+    </div>
+    <div id="waitingView">
+      <p class="message">Checking connection status...</p>
+    </div>
+  </div>
+  <script>
+    async function poll() {
+      try {
+        const res = await fetch('/api/status');
+        if (res.status === 401) { window.location.href = '/login'; return; }
+        const data = await res.json();
+
+        if (data.bridge.connected) {
+          document.getElementById('connectedView').classList.remove('hidden');
+          document.getElementById('qrView').classList.add('hidden');
+          document.getElementById('waitingView').classList.add('hidden');
+          document.getElementById('accountInfo').textContent = `Account: ${data.bridge.account}`;
+          return;
+        }
+
+        // Not connected — check for QR
+        const qrRes = await fetch('/api/qr');
+        const qrData = await qrRes.json();
+        if (qrData.qr) {
+          document.getElementById('qrView').classList.remove('hidden');
+          document.getElementById('connectedView').classList.add('hidden');
+          document.getElementById('waitingView').classList.add('hidden');
+          document.getElementById('qrImage').src = 'data:image/png;base64,' + qrData.qr;
+        } else {
+          document.getElementById('waitingView').classList.remove('hidden');
+          document.getElementById('waitingView').querySelector('.message').textContent =
+            'Waiting for QR code from bridge...';
+          document.getElementById('qrView').classList.add('hidden');
+          document.getElementById('connectedView').classList.add('hidden');
+        }
+      } catch (e) {
+        console.error('Poll error:', e);
+      }
+    }
+    poll();
+    setInterval(poll, 2000);
+
+    document.getElementById('logoutBtn').addEventListener('click', async () => {
+      await fetch('/api/bridge-logout', { method: 'POST' });
+      poll();
+    });
+  </script>
+</body>
+</html>
