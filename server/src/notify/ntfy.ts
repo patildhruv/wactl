@@ -5,6 +5,8 @@ interface NotifyConfig {
   method: string; // "ntfy" or "none"
   ntfyTopic?: string;
   serverIP?: string;
+  serverHostname?: string;
+  basePath?: string;
   adminPort: number;
 }
 
@@ -31,9 +33,14 @@ export class Notifier {
     }
     lastNotified.set(event, now);
 
-    const clickURL = this.config.serverIP
-      ? `http://${this.config.serverIP}:${this.config.adminPort}/auth`
-      : "";
+    // Prefer HTTPS hostname with base path (multi-instance behind Caddy)
+    // Fall back to direct IP + port for standalone installs
+    let clickURL = "";
+    if (this.config.serverHostname && this.config.basePath) {
+      clickURL = `https://${this.config.serverHostname}${this.config.basePath}/auth`;
+    } else if (this.config.serverIP) {
+      clickURL = `http://${this.config.serverIP}:${this.config.adminPort}/auth`;
+    }
 
     const url = `https://ntfy.sh/${this.config.ntfyTopic}`;
 
