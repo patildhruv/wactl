@@ -1,4 +1,3 @@
-import https from "https";
 import fs from "fs";
 import path from "path";
 import { execSync } from "child_process";
@@ -63,7 +62,7 @@ export class AutoUpdater {
       try {
         execSync("go get go.mau.fi/whatsmeow@latest", {
           cwd: this.bridgeDir,
-          env: { ...process.env, PATH: `${process.env.PATH}:/usr/local/go/bin` },
+          env: { ...process.env, PATH: `${process.env.PATH}:/usr/local/go/bin`, GOFLAGS: "-mod=mod" },
           timeout: 120000,
         });
 
@@ -74,7 +73,8 @@ export class AutoUpdater {
         });
 
         // Self-test: try to start the new binary and check /status
-        const testPort = 4099;
+        // Use port 14099 (well above the instance port range) to avoid collisions
+        const testPort = 14099;
         const newBinary = path.join(this.bridgeDir, "wactl-bridge-new");
 
         let testPassed = false;
@@ -90,7 +90,9 @@ export class AutoUpdater {
 
           try {
             const res = await this.httpGet(`http://127.0.0.1:${testPort}/status`);
-            testPassed = res.includes("connected");
+            // A fresh binary with no session will respond with connected:false,
+            // but a valid JSON response with the "connected" key proves it started correctly
+            testPassed = res.includes('"connected"');
           } catch {
             // Test endpoint not responding
           }
@@ -140,26 +142,21 @@ export class AutoUpdater {
   }
 
   private getLatestVersion(): Promise<string | null> {
-    return new Promise((resolve) => {
-      https
-        .get(
-          "https://api.github.com/repos/tulir/whatsmeow/tags?per_page=1",
-          { headers: { "User-Agent": "wactl-updater" } },
-          (res) => {
-            let data = "";
-            res.on("data", (chunk: string) => (data += chunk));
-            res.on("end", () => {
-              try {
-                const tags = JSON.parse(data);
-                resolve(tags[0]?.name || null);
-              } catch {
-                resolve(null);
-              }
-            });
-          }
-        )
-        .on("error", () => resolve(null));
-    });
+    // whatsmeow has no tagged releases — it uses Go pseudo-versions pinned to
+    // commit hashes (e.g. v0.0.0-20260305215846-fc65416c22c4).
+    // The GitHub tags API always returns empty. Instead, use `go list` to query
+    // the Go module proxy for the latest version.
+    try {
+      const result = execSync("go list -m -json go.mau.fi/whatsmeow@latest", {
+        cwd: this.bridgeDir,
+        env: { ...process.env, PATH: `${process.env.PATH}:/usr/local/go/bin`, GOFLAGS: "-mod=mod" },
+        timeout: 30000,
+      });
+      const info = JSON.parse(result.toString());
+      return Promise.resolve(info.Version || null);
+    } catch {
+      return Promise.resolve(null);
+    }
   }
 
   private recordUpdate(current: string, latest: string, action: string, result: string): void {
@@ -185,8 +182,8 @@ export class AutoUpdater {
 
   private httpGet(url: string): Promise<string> {
     return new Promise((resolve, reject) => {
-      const mod = url.startsWith("https") ? https : require("http");
-      mod.get(url, (res: any) => {
+      const http = require("http");
+      http.get(url, (res: any) => {
         let data = "";
         res.on("data", (chunk: string) => (data += chunk));
         res.on("end", () => resolve(data));

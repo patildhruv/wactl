@@ -6,8 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"reflect"
 	"strings"
+	"sync"
 	"time"
 
 	"go.mau.fi/whatsmeow"
@@ -25,6 +25,8 @@ type BridgeState struct {
 	Logger      waLog.Logger
 	CallbackURL string
 	StartTime   time.Time
+
+	mu sync.Mutex // protects QR state, Connected, LoggedIn, Account
 
 	// QR state
 	QRCode    string // raw QR string for encoding to PNG on demand
@@ -61,10 +63,12 @@ func (b *BridgeState) RegisterEventHandlers() {
 
 func (b *BridgeState) handleQR(evt *events.QR) {
 	if len(evt.Codes) > 0 {
+		b.mu.Lock()
 		b.QRCode = evt.Codes[0]
 		b.QRExpires = time.Now().Add(20 * time.Second)
 		b.Connected = false
 		b.LoggedIn = false
+		b.mu.Unlock()
 		b.Logger.Infof("QR code updated, expires at %s", b.QRExpires.Format(time.RFC3339))
 		b.notifyCallback("qr_ready", map[string]interface{}{
 			"expiresAt": b.QRExpires.Unix(),
@@ -73,29 +77,36 @@ func (b *BridgeState) handleQR(evt *events.QR) {
 }
 
 func (b *BridgeState) handlePairSuccess(evt *events.PairSuccess) {
+	b.mu.Lock()
 	b.QRCode = ""
 	b.LoggedIn = true
 	b.Account = evt.ID.User
+	b.mu.Unlock()
 	b.Logger.Infof("Pair success: %s", evt.ID.User)
 }
 
 func (b *BridgeState) handleConnected() {
+	b.mu.Lock()
 	b.Connected = true
 	b.LoggedIn = true
 	b.QRCode = ""
 	if b.Client.Store.ID != nil {
 		b.Account = b.Client.Store.ID.User
 	}
-	b.Logger.Infof("Connected to WhatsApp (account: %s)", b.Account)
+	account := b.Account
+	b.mu.Unlock()
+	b.Logger.Infof("Connected to WhatsApp (account: %s)", account)
 	b.notifyCallback("connected", map[string]interface{}{
-		"account": b.Account,
+		"account": account,
 	})
 }
 
 func (b *BridgeState) handleLoggedOut() {
+	b.mu.Lock()
 	b.Connected = false
 	b.LoggedIn = false
 	b.Account = ""
+	b.mu.Unlock()
 	b.Logger.Warnf("Logged out from WhatsApp")
 	b.notifyCallback("logged_out", nil)
 
@@ -113,8 +124,10 @@ func (b *BridgeState) handleLoggedOut() {
 		}
 		for evt := range qrChan {
 			if evt.Event == "code" {
+				b.mu.Lock()
 				b.QRCode = evt.Code
 				b.QRExpires = time.Now().Add(20 * time.Second)
+				b.mu.Unlock()
 				b.notifyCallback("qr_ready", map[string]interface{}{
 					"expiresAt": b.QRExpires.Unix(),
 				})
@@ -126,7 +139,9 @@ func (b *BridgeState) handleLoggedOut() {
 }
 
 func (b *BridgeState) handleStreamReplaced() {
+	b.mu.Lock()
 	b.Connected = false
+	b.mu.Unlock()
 	b.Logger.Warnf("Stream replaced — another client took over this session")
 	b.notifyCallback("stream_replaced", nil)
 }
@@ -326,20 +341,14 @@ func resolveChatName(client *whatsmeow.Client, store *MessageStore, jid types.JI
 	}
 
 	if jid.Server == "g.us" {
-		// Group chat
+		// Group chat — try to extract name from conversation protobuf
 		if conversation != nil {
-			v := reflect.ValueOf(conversation)
-			if v.Kind() == reflect.Ptr && !v.IsNil() {
-				v = v.Elem()
-				if f := v.FieldByName("DisplayName"); f.IsValid() && f.Kind() == reflect.Ptr && !f.IsNil() {
-					if dn := f.Elem().String(); dn != "" {
-						return dn
-					}
+			if conv, ok := conversation.(*waProto.Conversation); ok && conv != nil {
+				if dn := conv.GetDisplayName(); dn != "" {
+					return dn
 				}
-				if f := v.FieldByName("Name"); f.IsValid() && f.Kind() == reflect.Ptr && !f.IsNil() {
-					if n := f.Elem().String(); n != "" {
-						return n
-					}
+				if n := conv.GetName(); n != "" {
+					return n
 				}
 			}
 		}

@@ -49,17 +49,23 @@ wactl solves all three. Auto-updates, API key auth, and a web-based admin panel 
 ### One-Command Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/patildhruv/wactl/main/scripts/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/patildhruv/wactl/main/scripts/install.sh -o install.sh
+sudo bash install.sh --name myinstance --hostname wactl.example.com
 ```
 
-That's it. The script installs Go 1.25+, Node.js 20, fetches the latest whatsmeow, builds everything, generates credentials, creates systemd services, and starts it all up. Your credentials are printed once — save them.
+The script installs Go 1.25+, Node.js 20, Caddy, fetches the latest whatsmeow, builds everything, generates credentials, creates systemd services, and starts it all up. Your credentials are printed once — save them.
+
+Add more instances later:
+```bash
+sudo bash /opt/wactl/scripts/install.sh --name another
+```
 
 ### Or Clone Manually
 
 ```bash
 git clone https://github.com/patildhruv/wactl.git
 cd wactl
-sudo bash scripts/install.sh
+sudo bash scripts/install.sh --name myinstance --hostname wactl.example.com
 ```
 
 ### Docker
@@ -75,7 +81,7 @@ docker compose up -d
 
 ## First-Time Setup
 
-1. Open `http://<your-server-ip>:8080` in your browser
+1. Open `https://<your-hostname>/<instance-name>/` in your browser
 2. Log in with the admin credentials (printed during install)
 3. Navigate to **QR Auth**
 4. Open WhatsApp on your phone → **Linked Devices** → **Link a Device**
@@ -92,7 +98,7 @@ Add to your MCP client config (e.g., Claude Desktop):
 {
   "mcpServers": {
     "whatsapp": {
-      "url": "http://<your-server-ip>:3000/mcp/sse",
+      "url": "https://<your-hostname>/<instance-name>/mcp/sse",
       "headers": {
         "X-API-Key": "<your-api-key>"
       }
@@ -192,7 +198,7 @@ wactl/
 │   └── src/
 │       ├── index.ts        # Entry point
 │       ├── mcp/            # MCP JSON-RPC server + tool definitions
-│       ├── admin/          # Admin panel (routes + EJS views)
+│       ├── admin/          # Admin panel (routes + HTML views)
 │       ├── bridge/         # HTTP client for Go bridge API
 │       ├── notify/         # ntfy.sh integration
 │       ├── updater/        # Auto-update logic
@@ -239,7 +245,7 @@ Read **[MAINTENANCE.md](MAINTENANCE.md)** for:
 
 | Problem | Quick Fix |
 |---|---|
-| `Client outdated (405)` | `cd /opt/wactl/bridge && GOFLAGS="-mod=mod" go get go.mau.fi/whatsmeow@latest && go mod tidy && CGO_ENABLED=1 go build -o wactl-bridge . && systemctl restart wactl-bridge` |
+| `Client outdated (405)` | `cd /opt/wactl/bridge && GOFLAGS="-mod=mod" go get go.mau.fi/whatsmeow@latest && go mod tidy && CGO_ENABLED=1 go build -o wactl-bridge . && cp wactl-bridge /opt/wactl/instances/<name>/wactl-bridge && systemctl restart wactl-<name>-bridge` |
 | QR won't scan | Update WhatsApp on your phone. Remove a linked device if you have 4. |
 | Disconnects after ~20 min | Update whatsmeow (see above). Check WhatsApp phone app is updated. |
 | Build fails after update | Likely a `context.Context` parameter change — see [MAINTENANCE.md](MAINTENANCE.md#whatsmeow-breaking-changes) |
