@@ -60,7 +60,8 @@ program
       const b = data.bridge || {};
 
       const connIcon = b.connected ? chalk.green("Connected") : chalk.red("Disconnected");
-      const mcpIcon = chalk.green(`Listening :${data.mcpPort}`);
+      const mcpPort = data.mcpPort || process.env.MCP_PORT || "3000";
+      const mcpIcon = chalk.green(`Listening :${mcpPort}`);
       const apiKey = process.env.MCP_API_KEY || "not set";
       const autoUpdate = process.env.AUTO_UPDATE !== "false" ? chalk.green("Enabled") : chalk.red("Disabled");
 
