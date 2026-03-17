@@ -102,9 +102,14 @@ type ChatSummary struct {
 // GetChats returns all chats ordered by most recent message.
 func (s *MessageStore) GetChats() ([]ChatSummary, error) {
 	rows, err := s.db.Query(`
-		SELECT c.jid, c.name, COALESCE(m.content, ''), c.last_message_time, c.unread_count
+		SELECT c.jid, c.name,
+			COALESCE((
+				SELECT m.content FROM messages m
+				WHERE m.chat_jid = c.jid
+				ORDER BY m.timestamp DESC LIMIT 1
+			), ''),
+			c.last_message_time, c.unread_count
 		FROM chats c
-		LEFT JOIN messages m ON m.chat_jid = c.jid AND m.timestamp = c.last_message_time
 		ORDER BY c.last_message_time DESC
 	`)
 	if err != nil {
@@ -188,10 +193,17 @@ type ContactRecord struct {
 }
 
 // SearchContacts searches chats by name (used as a contacts proxy).
+// An empty query returns all contacts.
 func (s *MessageStore) SearchContacts(query string) ([]ContactRecord, error) {
+	var pattern string
+	if query == "" {
+		pattern = "%"
+	} else {
+		pattern = "%" + query + "%"
+	}
 	rows, err := s.db.Query(
 		`SELECT jid, name FROM chats WHERE name LIKE ? ORDER BY last_message_time DESC LIMIT 50`,
-		"%"+query+"%",
+		pattern,
 	)
 	if err != nil {
 		return nil, err

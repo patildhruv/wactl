@@ -47,13 +47,13 @@ Fix, build, test, deploy
 
 ### Daily (automated)
 - The `update-check.sh` cron runs at 3 AM (configurable via `AUTO_UPDATE_CRON`)
-- It fetches the latest whatsmeow, attempts a build, self-tests on port 4099, and hot-swaps the binary
+- It fetches the latest whatsmeow, attempts a build, self-tests on port 14099, and hot-swaps the binary
 - Check logs: `cat /var/log/wactl-update.log`
 
 ### Weekly (manual, 2 minutes)
 - `wactl status` — verify bridge is connected, uptime is healthy
 - `tail -20 /var/log/wactl-update.log` — scan for failed updates
-- Check disk usage: `du -sh /opt/wactl/data/` — SQLite databases grow over time
+- Check disk usage: `du -sh /opt/wactl/instances/*/data/` — SQLite databases grow over time
 
 ### Monthly (manual, 10 minutes)
 - Check Go version: `go version` — if whatsmeow bumps its minimum Go version, install the new one
@@ -111,12 +111,13 @@ go mod tidy
 **Frequency:** Rare  
 **Symptom:** Crash on startup with SQLite errors  
 **What happens:** whatsmeow changes its internal database schema.  
-**Fix:** Back up `data/*.db`, delete the store, re-authenticate:
+**Fix:** Back up the session db, delete it, and re-authenticate:
 ```bash
-systemctl stop wactl-bridge
-cp /opt/wactl/data/whatsapp.db /opt/wactl/data/whatsapp.db.bak
-rm /opt/wactl/data/whatsapp.db
-systemctl start wactl-bridge
+# Replace <name> with your instance name
+systemctl stop wactl-<name>-bridge
+cp /opt/wactl/instances/<name>/data/session.db /opt/wactl/instances/<name>/data/session.db.bak
+rm /opt/wactl/instances/<name>/data/session.db
+systemctl start wactl-<name>-bridge
 # Re-scan QR via admin panel
 ```
 
@@ -220,7 +221,7 @@ The update-check script (`scripts/update-check.sh`) runs daily and does the foll
 3. If same version → exit (nothing to do)
 4. If different → attempt build
 5. If build fails → rollback go.mod/go.sum, exit with error
-6. If build succeeds → self-test on port 4099
+6. If build succeeds → self-test on port 14099
 7. If self-test passes → swap binary, restart service
 8. If self-test fails → rollback everything
 ```
@@ -249,11 +250,13 @@ tail -5 /var/log/wactl-update.log
 When the auto-updater fails and you need to intervene:
 
 ```bash
+# Replace <name> with your instance name throughout
+
 # 1. SSH into your server
 ssh user@your-server
 
 # 2. Stop services
-sudo systemctl stop wactl-bridge wactl-server
+sudo systemctl stop wactl-<name>-bridge wactl-<name>-server
 
 # 3. Pull latest code
 cd /opt/wactl
@@ -272,13 +275,14 @@ sudo CGO_ENABLED=1 go build -o wactl-bridge .
 #    - "cannot find module" → go mod tidy, or check Go version
 #    - "undefined: SomeType" → protobuf change, update protobuf dep
 
-# 7. After successful build, rebuild TS server too (if needed)
+# 7. Copy new binary to instance and rebuild TS server too (if needed)
+sudo cp wactl-bridge /opt/wactl/instances/<name>/wactl-bridge
 cd ../server
 sudo npm ci
 sudo npm run build
 
 # 8. Restart
-sudo systemctl start wactl-bridge wactl-server
+sudo systemctl start wactl-<name>-bridge wactl-<name>-server
 
 # 9. Verify
 wactl status
@@ -289,37 +293,41 @@ wactl status
 ## Database & Session Management
 
 ### SQLite Files
+
+Each instance stores its data in its own directory:
 ```
-/opt/wactl/data/
-├── whatsapp.db          # whatsmeow session + device keys
+/opt/wactl/instances/<name>/data/
+├── session.db           # whatsmeow session + device keys
 ├── messages.db          # Message history (wactl's own store)
-└── test/                # Auto-updater self-test data (temporary)
+└── media/               # Cached media downloads
 ```
 
 ### Backup
 ```bash
-# Hot backup (safe while running)
-sqlite3 /opt/wactl/data/whatsapp.db ".backup '/opt/wactl/data/whatsapp.db.bak'"
-sqlite3 /opt/wactl/data/messages.db ".backup '/opt/wactl/data/messages.db.bak'"
+# Hot backup (safe while running) — replace <name> with your instance name
+INST_DATA="/opt/wactl/instances/<name>/data"
+sqlite3 "$INST_DATA/session.db" ".backup '$INST_DATA/session.db.bak'"
+sqlite3 "$INST_DATA/messages.db" ".backup '$INST_DATA/messages.db.bak'"
 ```
 
 ### Session Reset
 If the WhatsApp session is corrupted (persistent auth failures):
 ```bash
-sudo systemctl stop wactl-bridge
-rm /opt/wactl/data/whatsapp.db
-sudo systemctl start wactl-bridge
-# Re-scan QR code via admin panel at http://<server-ip>:8080
+# Replace <name> with your instance name
+sudo systemctl stop wactl-<name>-bridge
+rm /opt/wactl/instances/<name>/data/session.db
+sudo systemctl start wactl-<name>-bridge
+# Re-scan QR code via admin panel at https://<hostname>/<name>/auth
 ```
 
 ### Database Growth
 Messages accumulate indefinitely. For a moderately active account, expect ~50-100 MB/year. If disk becomes a concern:
 ```bash
-# Check size
-du -sh /opt/wactl/data/*.db
+# Check size — replace <name> with your instance name
+du -sh /opt/wactl/instances/<name>/data/*.db
 
 # Vacuum (reclaim space from deleted records)
-sqlite3 /opt/wactl/data/messages.db "VACUUM;"
+sqlite3 /opt/wactl/instances/<name>/data/messages.db "VACUUM;"
 ```
 
 ---
@@ -328,21 +336,21 @@ sqlite3 /opt/wactl/data/messages.db "VACUUM;"
 
 ### Health Checks
 ```bash
-# Is the bridge alive?
+# Is the bridge alive? (port depends on instance index — check instance .env)
 curl -s http://127.0.0.1:4000/status | python3 -m json.tool
 
 # Is the MCP server alive?
 curl -s http://127.0.0.1:3000/health
 
-# Are systemd services running?
-systemctl status wactl-bridge wactl-server
+# Are systemd services running? (replace <name> with instance name)
+systemctl status wactl-<name>-bridge wactl-<name>-server
 ```
 
 ### Log Locations
 | Log | Location | Command |
 |-----|----------|---------|
-| Bridge logs | journald | `journalctl -u wactl-bridge -f` |
-| Server logs | journald | `journalctl -u wactl-server -f` |
+| Bridge logs | journald | `journalctl -u wactl-<name>-bridge -f` |
+| Server logs | journald | `journalctl -u wactl-<name>-server -f` |
 | Update logs | File | `tail -f /var/log/wactl-update.log` |
 | Combined | CLI | `wactl logs` |
 
@@ -351,7 +359,7 @@ If you're running this in production, consider monitoring:
 1. **Bridge disconnect** — poll `http://127.0.0.1:4000/status` every 5 minutes
 2. **Update failures** — grep `/var/log/wactl-update.log` for "FAILED" or "reverting"
 3. **Disk space** — alert at 90% on the data partition
-4. **Service restarts** — `systemctl show wactl-bridge -p NRestarts`
+4. **Service restarts** — `systemctl show wactl-<name>-bridge -p NRestarts`
 
 ---
 
@@ -360,23 +368,26 @@ If you're running this in production, consider monitoring:
 ### "Everything is down and I need it working NOW"
 
 ```bash
+# Replace <name> with your instance name throughout
+
 # 1. Check what's actually broken
-sudo systemctl status wactl-bridge wactl-server
+sudo systemctl status wactl-<name>-bridge wactl-<name>-server
 
 # 2. Check bridge logs for the real error
-sudo journalctl -u wactl-bridge --since "10 minutes ago" --no-pager
+sudo journalctl -u wactl-<name>-bridge --since "10 minutes ago" --no-pager
 
 # 3. If "Client outdated (405)" — update whatsmeow
 cd /opt/wactl/bridge
 sudo GOFLAGS="-mod=mod" go get go.mau.fi/whatsmeow@latest
 sudo go mod tidy
 sudo CGO_ENABLED=1 go build -o wactl-bridge .
-sudo systemctl restart wactl-bridge wactl-server
+sudo cp wactl-bridge /opt/wactl/instances/<name>/wactl-bridge
+sudo systemctl restart wactl-<name>-bridge wactl-<name>-server
 
 # 4. If build fails — check the error message and fix accordingly (see "Known Breaking Patterns")
 
 # 5. If nothing works — full reset
-sudo systemctl stop wactl-bridge wactl-server
+sudo systemctl stop wactl-<name>-bridge wactl-<name>-server
 cd /opt/wactl
 sudo git stash  # save any local changes
 sudo git pull origin main
@@ -384,9 +395,10 @@ cd bridge/
 sudo GOFLAGS="-mod=mod" go get go.mau.fi/whatsmeow@latest
 sudo go mod tidy
 sudo CGO_ENABLED=1 go build -o wactl-bridge .
+sudo cp wactl-bridge /opt/wactl/instances/<name>/wactl-bridge
 cd ../server
 sudo npm ci && sudo npm run build
-sudo systemctl start wactl-bridge wactl-server
+sudo systemctl start wactl-<name>-bridge wactl-<name>-server
 
 # 6. If STILL broken — check if whatsmeow itself is broken
 #    Go to https://github.com/tulir/whatsmeow/issues
@@ -397,16 +409,17 @@ sudo systemctl start wactl-bridge wactl-server
 ### "I need to move to a new server"
 
 ```bash
-# On old server: backup
-tar czf wactl-backup.tar.gz /opt/wactl/data/ /opt/wactl/.env
+# On old server: backup all instance data
+tar czf wactl-backup.tar.gz /opt/wactl/instances/ /opt/wactl/instances.json
 
-# On new server: install fresh
-curl -fsSL https://raw.githubusercontent.com/patildhruv/wactl/main/scripts/install.sh | sudo bash
+# On new server: install fresh (replace with your hostname and instance names)
+curl -fsSL https://raw.githubusercontent.com/patildhruv/wactl/main/scripts/install.sh -o install.sh
+sudo bash install.sh --name <name> --hostname <your-hostname>
 
 # Restore data (keeps your session alive — no QR re-scan)
-sudo systemctl stop wactl-bridge wactl-server
+sudo systemctl stop wactl-<name>-bridge wactl-<name>-server
 sudo tar xzf wactl-backup.tar.gz -C /
-sudo systemctl start wactl-bridge wactl-server
+sudo systemctl start wactl-<name>-bridge wactl-<name>-server
 ```
 
 ---

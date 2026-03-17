@@ -1,5 +1,4 @@
 import https from "https";
-import http from "http";
 
 interface NotifyConfig {
   method: string; // "ntfy" or "none"
@@ -33,11 +32,12 @@ export class Notifier {
     }
     lastNotified.set(event, now);
 
-    // Prefer HTTPS hostname with base path (multi-instance behind Caddy)
-    // Fall back to direct IP + port for standalone installs
+    // Build click URL: prefer HTTPS hostname (with optional base path for multi-instance),
+    // fall back to direct IP + port for standalone installs
     let clickURL = "";
-    if (this.config.serverHostname && this.config.basePath) {
-      clickURL = `https://${this.config.serverHostname}${this.config.basePath}/auth`;
+    if (this.config.serverHostname) {
+      const bp = this.config.basePath || "";
+      clickURL = `https://${this.config.serverHostname}${bp}/auth`;
     } else if (this.config.serverIP) {
       clickURL = `http://${this.config.serverIP}:${this.config.adminPort}/auth`;
     }

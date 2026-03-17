@@ -22,7 +22,8 @@ import (
 )
 
 // StartAPI registers HTTP routes and starts the bridge API server.
-func (b *BridgeState) StartAPI(port int) {
+// Returns the *http.Server so the caller can gracefully shut it down.
+func (b *BridgeState) StartAPI(port int) *http.Server {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/status", b.handleStatus)
@@ -40,11 +41,18 @@ func (b *BridgeState) StartAPI(port int) {
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
 	b.Logger.Infof("Bridge API listening on %s", addr)
 
+	server := &http.Server{
+		Addr:    addr,
+		Handler: mux,
+	}
+
 	go func() {
-		if err := http.ListenAndServe(addr, mux); err != nil {
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			b.Logger.Errorf("API server error: %v", err)
 		}
 	}()
+
+	return server
 }
 
 func jsonResp(w http.ResponseWriter, status int, data interface{}) {
@@ -63,12 +71,18 @@ func (b *BridgeState) handleStatus(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+	b.mu.Lock()
+	connected := b.Connected
+	loggedIn := b.LoggedIn
+	account := b.Account
+	b.mu.Unlock()
+
 	uptime := int(time.Since(b.StartTime).Seconds())
 	jsonResp(w, http.StatusOK, map[string]interface{}{
-		"connected": b.Connected,
-		"loggedIn":  b.LoggedIn,
+		"connected": connected,
+		"loggedIn":  loggedIn,
 		"uptime":    uptime,
-		"account":   b.Account,
+		"account":   account,
 	})
 }
 
@@ -79,7 +93,12 @@ func (b *BridgeState) handleQREndpoint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if b.QRCode == "" || time.Now().After(b.QRExpires) {
+	b.mu.Lock()
+	qrCode := b.QRCode
+	qrExpires := b.QRExpires
+	b.mu.Unlock()
+
+	if qrCode == "" || time.Now().After(qrExpires) {
 		jsonResp(w, http.StatusOK, map[string]interface{}{
 			"qr":        nil,
 			"expiresAt": nil,
@@ -88,7 +107,7 @@ func (b *BridgeState) handleQREndpoint(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Generate base64 PNG from QR code string
-	png, err := qrcode.Encode(b.QRCode, qrcode.Medium, 512)
+	png, err := qrcode.Encode(qrCode, qrcode.Medium, 512)
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, "failed to generate QR PNG")
 		return
@@ -97,7 +116,7 @@ func (b *BridgeState) handleQREndpoint(w http.ResponseWriter, r *http.Request) {
 
 	jsonResp(w, http.StatusOK, map[string]interface{}{
 		"qr":        b64,
-		"expiresAt": b.QRExpires.Unix(),
+		"expiresAt": qrExpires.Unix(),
 	})
 }
 
@@ -126,8 +145,8 @@ func (b *BridgeState) handleChatMessages(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Parse chat ID from path: /chats/{id}/messages
-	path := strings.TrimPrefix(r.URL.Path, "/chats/")
-	parts := strings.SplitN(path, "/", 2)
+	pathStr := strings.TrimPrefix(r.URL.Path, "/chats/")
+	parts := strings.SplitN(pathStr, "/", 2)
 	if len(parts) < 2 || parts[1] != "messages" {
 		jsonErr(w, http.StatusBadRequest, "invalid path, expected /chats/:id/messages")
 		return
@@ -141,8 +160,8 @@ func (b *BridgeState) handleChatMessages(w http.ResponseWriter, r *http.Request)
 		}
 	}
 	var before int64
-	if b := r.URL.Query().Get("before"); b != "" {
-		if n, err := strconv.ParseInt(b, 10, 64); err == nil {
+	if bStr := r.URL.Query().Get("before"); bStr != "" {
+		if n, err := strconv.ParseInt(bStr, 10, 64); err == nil {
 			before = n
 		}
 	}
@@ -164,10 +183,7 @@ func (b *BridgeState) handleContacts(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	query := r.URL.Query().Get("q")
-	if query == "" {
-		query = "%"
-	}
+	query := r.URL.Query().Get("q") // empty string = return all
 	contacts, err := b.Store.SearchContacts(query)
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
@@ -290,6 +306,21 @@ func (b *BridgeState) handleSendFile(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// sanitizeFilename strips path separators and dangerous characters from a filename
+// to prevent path traversal attacks when used in file paths.
+func sanitizeFilename(name string) string {
+	// Use only the base name (strip any directory components)
+	name = filepath.Base(name)
+	// Replace any remaining path separators (shouldn't exist after Base, but be safe)
+	name = strings.ReplaceAll(name, "/", "_")
+	name = strings.ReplaceAll(name, "\\", "_")
+	// Reject empty or current/parent directory references
+	if name == "" || name == "." || name == ".." {
+		name = "unnamed"
+	}
+	return name
+}
+
 // GET /media/:messageId
 func (b *BridgeState) handleMedia(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -309,16 +340,19 @@ func (b *BridgeState) handleMedia(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Sanitize filename to prevent path traversal
+	safeFilename := sanitizeFilename(filename)
+
 	// Check data dir for cached file
 	dataDir := os.Getenv("DATA_DIR")
 	if dataDir == "" {
 		dataDir = "./data"
 	}
 	cacheDir := filepath.Join(dataDir, "media")
-	cachedPath := filepath.Join(cacheDir, messageID+"_"+filename)
+	cachedPath := filepath.Join(cacheDir, messageID+"_"+safeFilename)
 
 	if fileData, err := os.ReadFile(cachedPath); err == nil {
-		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", safeFilename))
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Write(fileData)
 		return
@@ -343,11 +377,14 @@ func (b *BridgeState) handleMedia(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Cache the file
-	os.MkdirAll(cacheDir, 0755)
-	os.WriteFile(cachedPath, data, 0644)
+	// Cache the file (best effort — log errors but don't fail the request)
+	if err := os.MkdirAll(cacheDir, 0755); err != nil {
+		b.Logger.Warnf("Failed to create media cache dir: %v", err)
+	} else if err := os.WriteFile(cachedPath, data, 0644); err != nil {
+		b.Logger.Warnf("Failed to cache media file: %v", err)
+	}
 
-	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", safeFilename))
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Write(data)
 }
@@ -358,10 +395,14 @@ func (b *BridgeState) handleLogout(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	b.Client.Logout(context.Background())
+	if err := b.Client.Logout(context.Background()); err != nil {
+		b.Logger.Warnf("Logout error: %v", err)
+	}
+	b.mu.Lock()
 	b.Connected = false
 	b.LoggedIn = false
 	b.Account = ""
+	b.mu.Unlock()
 	jsonResp(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -433,8 +474,8 @@ func extractDirectPath(url string) string {
 	if len(parts) < 2 {
 		return url
 	}
-	path := strings.SplitN(parts[1], "?", 2)[0]
-	return "/" + path
+	pathStr := strings.SplitN(parts[1], "?", 2)[0]
+	return "/" + pathStr
 }
 
 // mediaDownloader implements whatsmeow's DownloadableMessage interface.
@@ -448,10 +489,10 @@ type mediaDownloader struct {
 	mediaType     whatsmeow.MediaType
 }
 
-func (d *mediaDownloader) GetDirectPath() string        { return d.directPath }
-func (d *mediaDownloader) GetURL() string               { return d.url }
-func (d *mediaDownloader) GetMediaKey() []byte           { return d.mediaKey }
-func (d *mediaDownloader) GetFileLength() uint64         { return d.fileLength }
-func (d *mediaDownloader) GetFileSHA256() []byte         { return d.fileSHA256 }
-func (d *mediaDownloader) GetFileEncSHA256() []byte      { return d.fileEncSHA256 }
+func (d *mediaDownloader) GetDirectPath() string            { return d.directPath }
+func (d *mediaDownloader) GetURL() string                   { return d.url }
+func (d *mediaDownloader) GetMediaKey() []byte              { return d.mediaKey }
+func (d *mediaDownloader) GetFileLength() uint64            { return d.fileLength }
+func (d *mediaDownloader) GetFileSHA256() []byte            { return d.fileSHA256 }
+func (d *mediaDownloader) GetFileEncSHA256() []byte         { return d.fileEncSHA256 }
 func (d *mediaDownloader) GetMediaType() whatsmeow.MediaType { return d.mediaType }

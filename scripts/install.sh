@@ -304,7 +304,7 @@ cp "$INSTALL_DIR/bridge/wactl-bridge" "$INSTANCE_DIR/wactl-bridge"
 echo "[${STEP_CRED}/${TOTAL_STEPS}] Generating credentials for '$NAME'..."
 MCP_KEY=$(openssl rand -hex 32)
 ADMIN_PASS=$(openssl rand -base64 12)
-ADMIN_HASH=$(cd "$INSTALL_DIR/server" && node -e "const b=require('bcryptjs');console.log(b.hashSync('$ADMIN_PASS',12))")
+ADMIN_HASH=$(cd "$INSTALL_DIR/server" && node -e "const b=require('bcryptjs');console.log(b.hashSync(process.argv[1],12))" -- "$ADMIN_PASS")
 
 # Determine notification method
 if [ -n "$NTFY_TOPIC" ]; then
