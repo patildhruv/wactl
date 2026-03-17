@@ -343,7 +343,7 @@ func resolveChatName(client *whatsmeow.Client, store *MessageStore, jid types.JI
 				}
 			}
 		}
-		info, err := client.GetGroupInfo(jid)
+		info, err := client.GetGroupInfo(context.Background(), jid)
 		if err == nil && info.Name != "" {
 			return info.Name
 		}
@@ -351,7 +351,7 @@ func resolveChatName(client *whatsmeow.Client, store *MessageStore, jid types.JI
 	}
 
 	// Individual contact
-	contact, err := client.Store.Contacts.GetContact(jid)
+	contact, err := client.Store.Contacts.GetContact(context.Background(), jid)
 	if err == nil && contact.FullName != "" {
 		return contact.FullName
 	}

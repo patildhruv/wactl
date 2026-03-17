@@ -337,7 +337,7 @@ func (b *BridgeState) handleMedia(w http.ResponseWriter, r *http.Request) {
 		fileLength: fileLength, fileSHA256: fileSHA256,
 		fileEncSHA256: fileEncSHA256, mediaType: waType,
 	}
-	data, err := b.Client.Download(dl)
+	data, err := b.Client.Download(context.Background(), dl)
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, fmt.Sprintf("download failed: %v", err))
 		return
@@ -358,7 +358,7 @@ func (b *BridgeState) handleLogout(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	b.Client.Logout()
+	b.Client.Logout(context.Background())
 	b.Connected = false
 	b.LoggedIn = false
 	b.Account = ""

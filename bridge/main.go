@@ -32,13 +32,13 @@ func main() {
 
 	dbLog := waLog.Stdout("Database", "WARN", true)
 	sessionDB := fmt.Sprintf("file:%s/session.db?_foreign_keys=on", dataDir)
-	container, err := sqlstore.New("sqlite3", sessionDB, dbLog)
+	container, err := sqlstore.New(context.Background(), "sqlite3", sessionDB, dbLog)
 	if err != nil {
 		logger.Errorf("Failed to open session database: %v", err)
 		os.Exit(1)
 	}
 
-	device, err := container.GetFirstDevice()
+	device, err := container.GetFirstDevice(context.Background())
 	if err != nil {
 		if err == sql.ErrNoRows {
 			device = container.NewDevice()
