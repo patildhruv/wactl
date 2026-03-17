@@ -47,11 +47,24 @@ if ! CGO_ENABLED=1 go build -o wactl-bridge-new . 2>&1; then
   echo "$LOG_PREFIX Build failed, reverting..."
   mv go.mod.bak go.mod
   mv go.sum.bak go.sum
+  # Notify all instances with ntfy configured about the build failure
+  jq -r '.instances | to_entries[] | .key' "$INSTANCES_JSON" | while read -r INST; do
+    INST_ENV="$INSTALL_DIR/instances/$INST/.env"
+    if [ -f "$INST_ENV" ]; then
+      NTFY=$(grep '^NTFY_TOPIC=' "$INST_ENV" 2>/dev/null | cut -d= -f2)
+      if [ -n "$NTFY" ]; then
+        curl -s -d "Auto-update build to $LATEST failed. Manual review needed." \
+          -H "Title: wactl — Auto-update Failed" -H "Priority: urgent" \
+          "https://ntfy.sh/$NTFY" > /dev/null 2>&1 || true
+      fi
+    fi
+  done
   exit 1
 fi
 
 # Self-test: start on temp port and check /status
-TEST_PORT=4099
+# Use port 14099 (well above the instance port range) to avoid collisions
+TEST_PORT=14099
 TEST_DATA_DIR=$(mktemp -d "/tmp/wactl-test-XXXXXX")
 echo "$LOG_PREFIX Self-testing on port $TEST_PORT..."
 DATA_DIR="$TEST_DATA_DIR" BRIDGE_PORT=$TEST_PORT ./wactl-bridge-new &
@@ -64,6 +77,8 @@ wait $TEST_PID 2>/dev/null || true
 
 rm -rf "$TEST_DATA_DIR"
 
+# A fresh binary with no session returns connected:false — that's fine.
+# A valid JSON response with the "connected" key proves it started correctly.
 if echo "$TEST_RESULT" | grep -q '"connected"'; then
   echo "$LOG_PREFIX Self-test PASSED"
 
@@ -92,6 +107,18 @@ else
   mv go.mod.bak go.mod
   mv go.sum.bak go.sum
   echo "$LOG_PREFIX Rolled back to $CURRENT"
+  # Notify all instances with ntfy configured about the failure
+  jq -r '.instances | to_entries[] | .key' "$INSTANCES_JSON" | while read -r INST; do
+    INST_ENV="$INSTALL_DIR/instances/$INST/.env"
+    if [ -f "$INST_ENV" ]; then
+      NTFY=$(grep '^NTFY_TOPIC=' "$INST_ENV" 2>/dev/null | cut -d= -f2)
+      if [ -n "$NTFY" ]; then
+        curl -s -d "Auto-update to $LATEST failed self-test. Rolled back to $CURRENT." \
+          -H "Title: wactl — Auto-update Failed" -H "Priority: urgent" \
+          "https://ntfy.sh/$NTFY" > /dev/null 2>&1 || true
+      fi
+    fi
+  done
 fi
 
 echo "$LOG_PREFIX Done."

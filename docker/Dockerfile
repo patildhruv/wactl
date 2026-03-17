@@ -16,7 +16,7 @@ RUN npm run build
 
 # Stage 3: Runtime
 FROM node:20-alpine
-RUN apk add --no-cache sqlite-libs
+RUN apk add --no-cache sqlite-libs bash
 WORKDIR /app
 
 COPY --from=go-builder /build/wactl-bridge ./
