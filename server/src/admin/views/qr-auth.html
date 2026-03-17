@@ -38,9 +38,9 @@
   <div class="header">
     <h1><span>wactl</span> QR Authentication</h1>
     <nav>
-      <a href="/">Dashboard</a>
-      <a href="/auth" class="active">QR Auth</a>
-      <a href="/settings">Settings</a>
+      <a href="" data-nav="/">Dashboard</a>
+      <a href="" class="active" data-nav="/auth">QR Auth</a>
+      <a href="" data-nav="/settings">Settings</a>
     </nav>
   </div>
   <div class="center">
@@ -61,10 +61,12 @@
     </div>
   </div>
   <script>
+    const B = window.BASE_PATH || '';
+    document.querySelectorAll('[data-nav]').forEach(a => a.href = B + a.getAttribute('data-nav'));
     async function poll() {
       try {
-        const res = await fetch('/api/status');
-        if (res.status === 401) { window.location.href = '/login'; return; }
+        const res = await fetch(B + '/api/status');
+        if (res.status === 401) { window.location.href = B + '/login'; return; }
         const data = await res.json();
 
         if (data.bridge.connected) {
@@ -76,7 +78,7 @@
         }
 
         // Not connected — check for QR
-        const qrRes = await fetch('/api/qr');
+        const qrRes = await fetch(B + '/api/qr');
         const qrData = await qrRes.json();
         if (qrData.qr) {
           document.getElementById('qrView').classList.remove('hidden');
@@ -98,7 +100,7 @@
     setInterval(poll, 2000);
 
     document.getElementById('logoutBtn').addEventListener('click', async () => {
-      await fetch('/api/bridge-logout', { method: 'POST' });
+      await fetch(B + '/api/bridge-logout', { method: 'POST' });
       poll();
     });
   </script>
