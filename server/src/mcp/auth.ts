@@ -11,7 +11,14 @@ export function validateApiKey(req: IncomingMessage, apiKey: string): boolean {
     return false;
   }
 
-  const provided = req.headers["x-api-key"];
+  // Accept API key via X-API-Key header or Authorization: Bearer <key>
+  let provided: string | string[] | undefined = req.headers["x-api-key"];
+  if (!provided || typeof provided !== "string") {
+    const authHeader = req.headers["authorization"];
+    if (typeof authHeader === "string" && authHeader.startsWith("Bearer ")) {
+      provided = authHeader.slice(7);
+    }
+  }
   if (!provided || typeof provided !== "string") {
     return false;
   }

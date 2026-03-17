@@ -46,9 +46,28 @@ const notifier = new Notifier({
   adminPort: ADMIN_PORT,
 });
 
-// --- MCP Server (SSE transport) ---
+// --- MCP Server ---
 const mcpApp = express();
 
+// CORS middleware — needed for browser-based clients (e.g. Perplexity)
+mcpApp.use((_req, res, next) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Key, Mcp-Session-Id");
+  res.setHeader("Access-Control-Expose-Headers", "Content-Type, Mcp-Session-Id");
+  if (_req.method === "OPTIONS") {
+    res.writeHead(204).end();
+    return;
+  }
+  next();
+});
+
+// Streamable HTTP transport (modern MCP clients)
+mcpApp.all("/mcp", express.json(), (req, res) => {
+  mcpServer.handleStreamableHTTP(req, res);
+});
+
+// SSE transport (legacy MCP clients)
 mcpApp.get("/mcp/sse", (req, res) => {
   mcpServer.handleSSE(req, res);
 });
