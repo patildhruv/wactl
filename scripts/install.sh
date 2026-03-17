@@ -95,10 +95,12 @@ generate_caddyfile() {
     # Sort instances by name for deterministic output
     # MCP routes MUST come before admin routes (more specific first)
     jq -r '.instances | to_entries | sort_by(.key)[] | "\(.key) \(.value.mcp_port) \(.value.admin_port)"' "$INSTANCES_JSON" | while read -r inst_name mcp_port admin_port; do
-      echo "    handle_path /${inst_name}/mcp/* {"
+      echo "    handle /${inst_name}/mcp/* {"
+      echo "        uri strip_prefix /${inst_name}"
       echo "        reverse_proxy localhost:${mcp_port}"
       echo "    }"
-      echo "    handle_path /${inst_name}/* {"
+      echo "    handle /${inst_name}/* {"
+      echo "        uri strip_prefix /${inst_name}"
       echo "        reverse_proxy localhost:${admin_port}"
       echo "    }"
     done
