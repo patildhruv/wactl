@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
@@ -79,7 +80,11 @@ func main() {
 	if client.Store.ID == nil {
 		// New device — need QR pairing
 		logger.Infof("No existing session, waiting for QR scan...")
-		qrChan, _ := client.GetQRChannel(context.Background())
+		qrChan, err := client.GetQRChannel(context.Background())
+		if err != nil {
+			logger.Errorf("Failed to get QR channel: %v", err)
+			os.Exit(1)
+		}
 		if err := client.Connect(); err != nil {
 			logger.Errorf("Failed to connect: %v", err)
 			os.Exit(1)
@@ -89,8 +94,10 @@ func main() {
 		go func() {
 			for evt := range qrChan {
 				if evt.Event == "code" {
+					bridge.mu.Lock()
 					bridge.QRCode = evt.Code
 					bridge.QRExpires = time.Now().Add(20 * time.Second)
+					bridge.mu.Unlock()
 					logger.Infof("QR code ready (scan via admin panel or /qr endpoint)")
 				} else if evt.Event == "success" {
 					logger.Infof("QR pairing successful")
@@ -104,16 +111,18 @@ func main() {
 			logger.Errorf("Failed to connect: %v", err)
 			os.Exit(1)
 		}
+		bridge.mu.Lock()
 		bridge.Connected = true
 		bridge.LoggedIn = true
 		if client.Store.ID != nil {
 			bridge.Account = client.Store.ID.User
 		}
+		bridge.mu.Unlock()
 		logger.Infof("Reconnected with existing session (account: %s)", bridge.Account)
 	}
 
 	// Start HTTP API
-	bridge.StartAPI(port)
+	httpServer := bridge.StartAPI(port)
 
 	// Wait for shutdown signal
 	sig := make(chan os.Signal, 1)
@@ -122,6 +131,11 @@ func main() {
 	<-sig
 
 	logger.Infof("Shutting down...")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := httpServer.Shutdown(ctx); err != nil {
+		logger.Warnf("HTTP server shutdown error: %v", err)
+	}
 	client.Disconnect()
 }
 

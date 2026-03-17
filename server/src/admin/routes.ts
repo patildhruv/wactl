@@ -2,7 +2,6 @@ import express, { Request, Response, NextFunction } from "express";
 import path from "path";
 import fs from "fs";
 import crypto from "crypto";
-import cookieParser from "cookie-parser";
 import {
   checkRateLimit,
   verifyPassword,
@@ -32,8 +31,10 @@ export function createAdminRouter(
 
   // Inject BASE_PATH into HTML views so client-side JS can build correct URLs.
   // The <script> tag is injected right after <head> so it's available before any other JS.
+  // The value is JSON-encoded to prevent XSS via crafted BASE_PATH values.
   function injectBasePath(html: string): string {
-    const injection = `<script>window.BASE_PATH="${basePath}";</script>`;
+    const safeBasePath = JSON.stringify(basePath);
+    const injection = `<script>window.BASE_PATH=${safeBasePath};</script>`;
     return html.replace("<head>", `<head>${injection}`);
   }
 
@@ -102,6 +103,7 @@ export function createAdminRouter(
       httpOnly: true,
       maxAge: 24 * 60 * 60 * 1000, // 24 hours
       sameSite: "lax",
+      path: "/", // ensure cookie is sent for all paths (including behind BASE_PATH)
     });
     res.json({ ok: true });
   });

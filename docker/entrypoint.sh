@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 set -e
 
 export DATA_DIR="${DATA_DIR:-/app/data}"
