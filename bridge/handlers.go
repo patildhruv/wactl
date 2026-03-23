@@ -96,6 +96,7 @@ func (b *BridgeState) handleConnected() {
 	account := b.Account
 	b.mu.Unlock()
 	b.Logger.Infof("Connected to WhatsApp (account: %s)", account)
+	go b.SyncContacts()
 	b.notifyCallback("connected", map[string]interface{}{
 		"account": account,
 	})
@@ -149,6 +150,11 @@ func (b *BridgeState) handleStreamReplaced() {
 func (b *BridgeState) handleMessage(msg *events.Message) {
 	chatJID := msg.Info.Chat.String()
 	sender := msg.Info.Sender.User
+
+	// Capture sender's push name
+	if msg.Info.PushName != "" && !msg.Info.IsFromMe {
+		_ = b.Store.UpsertContact(msg.Info.Sender.String(), msg.Info.PushName, "")
+	}
 
 	name := resolveChatName(b.Client, b.Store, msg.Info.Chat, chatJID, nil, sender, b.Logger)
 	_ = b.Store.UpsertChat(chatJID, name, msg.Info.Timestamp)
@@ -332,6 +338,31 @@ func extractMediaInfo(msg *waProto.Message) (mediaType, filename, url string, me
 	return
 }
 
+// SyncContacts reads all contacts from whatsmeow's local store and persists them.
+func (b *BridgeState) SyncContacts() {
+	contacts, err := b.Client.Store.Contacts.GetAllContacts(context.Background())
+	if err != nil {
+		b.Logger.Warnf("Failed to get contacts: %v", err)
+		return
+	}
+	entries := make([]ContactEntry, 0, len(contacts))
+	for jid, contact := range contacts {
+		if contact.FullName == "" && contact.PushName == "" {
+			continue
+		}
+		entries = append(entries, ContactEntry{
+			JID:      jid.String(),
+			PushName: contact.PushName,
+			FullName: contact.FullName,
+		})
+	}
+	if err := b.Store.BulkUpsertContacts(entries); err != nil {
+		b.Logger.Warnf("BulkUpsertContacts error: %v", err)
+		return
+	}
+	b.Logger.Infof("Synced %d contacts from whatsmeow store", len(entries))
+}
+
 // resolveChatName determines a human-readable name for a chat.
 func resolveChatName(client *whatsmeow.Client, store *MessageStore, jid types.JID, chatJID string, conversation interface{}, sender string, logger waLog.Logger) string {
 	// Check existing name in DB
@@ -359,10 +390,22 @@ func resolveChatName(client *whatsmeow.Client, store *MessageStore, jid types.JI
 		return fmt.Sprintf("Group %s", jid.User)
 	}
 
-	// Individual contact
+	// Individual contact — check our contacts table first
+	if name := store.GetContactName(chatJID); name != "" {
+		return name
+	}
+
+	// Fall back to whatsmeow contact store
 	contact, err := client.Store.Contacts.GetContact(context.Background(), jid)
-	if err == nil && contact.FullName != "" {
-		return contact.FullName
+	if err == nil {
+		if contact.FullName != "" {
+			_ = store.UpsertContact(chatJID, contact.PushName, contact.FullName)
+			return contact.FullName
+		}
+		if contact.PushName != "" {
+			_ = store.UpsertContact(chatJID, contact.PushName, "")
+			return contact.PushName
+		}
 	}
 	if sender != "" {
 		return sender
