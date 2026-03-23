@@ -40,6 +40,7 @@ const mcpServer = new MCPServerWrapper(bridge, MCP_API_KEY, BASE_PATH);
 const notifier = new Notifier({
   method: process.env.NOTIFY_METHOD || "none",
   ntfyTopic: process.env.NTFY_TOPIC,
+  ntfyServer: process.env.NTFY_SERVER,
   serverIP: process.env.SERVER_IP,
   serverHostname: process.env.SERVER_HOSTNAME,
   basePath: BASE_PATH,
@@ -48,6 +49,19 @@ const notifier = new Notifier({
 
 // --- MCP Server ---
 const mcpApp = express();
+
+// Request logging — debug MCP client connections
+mcpApp.use((req, _res, next) => {
+  console.log(`[wactl-mcp] ${req.method} ${req.url} headers=${JSON.stringify({
+    authorization: req.headers["authorization"] ? "Bearer ***" : undefined,
+    "x-api-key": req.headers["x-api-key"] ? "***" : undefined,
+    "content-type": req.headers["content-type"],
+    accept: req.headers["accept"],
+    "mcp-session-id": req.headers["mcp-session-id"],
+    origin: req.headers["origin"],
+  })}`);
+  next();
+});
 
 // CORS middleware — needed for browser-based clients (e.g. Perplexity)
 mcpApp.use((_req, res, next) => {
@@ -127,6 +141,11 @@ callbackApp.post("/bridge/events", (req, res) => {
 
   if (event === "logged_out" || event === "stream_replaced") {
     notifier.notifyDisconnect(event);
+  } else if (event === "qr_ready") {
+    notifier.notifyQRReady();
+  } else if (event === "connected") {
+    const account = req.body?.account || "unknown";
+    notifier.notifyConnected(account);
   }
 
   res.json({ ok: true });

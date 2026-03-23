@@ -113,6 +113,7 @@ export class AutoUpdater {
           fs.unlinkSync(newBinary);
           console.log(`[updater] Updated to ${latestVersion}`);
           this.recordUpdate(currentVersion, latestVersion, "updated", "success");
+          await this.notifier.notifyUpdateSuccess(latestVersion);
         } else {
           // Rollback
           try { fs.unlinkSync(path.join(this.bridgeDir, "wactl-bridge-new")); } catch {}
