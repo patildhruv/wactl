@@ -52,10 +52,12 @@ if ! CGO_ENABLED=1 go build -o wactl-bridge-new . 2>&1; then
     INST_ENV="$INSTALL_DIR/instances/$INST/.env"
     if [ -f "$INST_ENV" ]; then
       NTFY=$(grep '^NTFY_TOPIC=' "$INST_ENV" 2>/dev/null | cut -d= -f2)
+      NTFY_SRV=$(grep '^NTFY_SERVER=' "$INST_ENV" 2>/dev/null | cut -d= -f2-)
+      NTFY_SRV="${NTFY_SRV:-https://ntfy.sh}"
       if [ -n "$NTFY" ]; then
         curl -s -d "Auto-update build to $LATEST failed. Manual review needed." \
           -H "Title: wactl — Auto-update Failed" -H "Priority: urgent" \
-          "https://ntfy.sh/$NTFY" > /dev/null 2>&1 || true
+          "$NTFY_SRV/$NTFY" > /dev/null 2>&1 || true
       fi
     fi
   done
@@ -92,8 +94,9 @@ if echo "$TEST_RESULT" | grep -q '"connected"'; then
     INST_DIR="$INSTALL_DIR/instances/$INST"
     if [ -d "$INST_DIR" ]; then
       echo "$LOG_PREFIX Updating instance '$INST'..."
+      systemctl stop "wactl-${INST}-server" "wactl-${INST}-bridge" 2>/dev/null || true
       cp "$BRIDGE_DIR/wactl-bridge" "$INST_DIR/wactl-bridge"
-      systemctl restart "wactl-${INST}-bridge" 2>/dev/null || true
+      systemctl start "wactl-${INST}-bridge" "wactl-${INST}-server" 2>/dev/null || true
       echo "$LOG_PREFIX Instance '$INST' restarted."
     else
       echo "$LOG_PREFIX WARNING: Instance directory missing for '$INST', skipping."
@@ -101,6 +104,21 @@ if echo "$TEST_RESULT" | grep -q '"connected"'; then
   done
 
   echo "$LOG_PREFIX Updated all instances to $LATEST"
+
+  # Notify all instances with ntfy configured about the successful update
+  jq -r '.instances | to_entries[] | .key' "$INSTANCES_JSON" | while read -r INST; do
+    INST_ENV="$INSTALL_DIR/instances/$INST/.env"
+    if [ -f "$INST_ENV" ]; then
+      NTFY=$(grep '^NTFY_TOPIC=' "$INST_ENV" 2>/dev/null | cut -d= -f2)
+      NTFY_SRV=$(grep '^NTFY_SERVER=' "$INST_ENV" 2>/dev/null | cut -d= -f2-)
+      NTFY_SRV="${NTFY_SRV:-https://ntfy.sh}"
+      if [ -n "$NTFY" ]; then
+        curl -s -d "whatsmeow updated to $LATEST. Bridge restarted." \
+          -H "Title: wactl — Updated" -H "Priority: default" \
+          "$NTFY_SRV/$NTFY" > /dev/null 2>&1 || true
+      fi
+    fi
+  done
 else
   echo "$LOG_PREFIX Self-test FAILED, rolling back..."
   rm -f wactl-bridge-new
@@ -112,10 +130,12 @@ else
     INST_ENV="$INSTALL_DIR/instances/$INST/.env"
     if [ -f "$INST_ENV" ]; then
       NTFY=$(grep '^NTFY_TOPIC=' "$INST_ENV" 2>/dev/null | cut -d= -f2)
+      NTFY_SRV=$(grep '^NTFY_SERVER=' "$INST_ENV" 2>/dev/null | cut -d= -f2-)
+      NTFY_SRV="${NTFY_SRV:-https://ntfy.sh}"
       if [ -n "$NTFY" ]; then
         curl -s -d "Auto-update to $LATEST failed self-test. Rolled back to $CURRENT." \
           -H "Title: wactl — Auto-update Failed" -H "Priority: urgent" \
-          "https://ntfy.sh/$NTFY" > /dev/null 2>&1 || true
+          "$NTFY_SRV/$NTFY" > /dev/null 2>&1 || true
       fi
     fi
   done
