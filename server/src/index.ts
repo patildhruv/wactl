@@ -22,7 +22,7 @@ const ADMIN_USER = process.env.ADMIN_USER || "admin";
 const ADMIN_PASSWORD_HASH = process.env.ADMIN_PASSWORD_HASH || "";
 const DATA_DIR = process.env.DATA_DIR || path.resolve(__dirname, "../../data");
 const BRIDGE_DIR = process.env.BRIDGE_DIR || path.resolve(__dirname, "../../bridge");
-const BASE_PATH = process.env.BASE_PATH || ""; // e.g. "/dhruv" for multi-instance
+const BASE_PATH = process.env.BASE_PATH || ""; // e.g. "/myname" for multi-instance
 
 if (!MCP_API_KEY) {
   console.warn("[wactl] WARNING: MCP_API_KEY not set — MCP endpoint will reject all requests");

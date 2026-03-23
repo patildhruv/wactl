@@ -3,13 +3,13 @@ set -e
 
 # wactl — Multi-Instance Installer with HTTPS via Caddy
 # Usage:
-#   First install:  sudo bash install.sh --name dhruv --hostname wactl.example.com
-#   With ntfy:      sudo bash install.sh --name dhruv --hostname wactl.example.com --ntfy
-#   Custom topic:   sudo bash install.sh --name dhruv --hostname wactl.example.com --ntfy my-topic
-#   Custom server:  sudo bash install.sh --name dhruv --ntfy --ntfy-server http://localhost:2586
-#   Add instance:   sudo bash install.sh --name dad
-#   Add with ntfy:  sudo bash install.sh --name dad --ntfy
-#   Remove instance: sudo bash install.sh --remove --name dad
+#   First install:  sudo bash install.sh --name myname --hostname wactl.example.com
+#   With ntfy:      sudo bash install.sh --name myname --hostname wactl.example.com --ntfy
+#   Custom topic:   sudo bash install.sh --name myname --hostname wactl.example.com --ntfy my-topic
+#   Custom server:  sudo bash install.sh --name myname --ntfy --ntfy-server http://localhost:2586
+#   Add instance:   sudo bash install.sh --name another
+#   Add with ntfy:  sudo bash install.sh --name another --ntfy
+#   Remove instance: sudo bash install.sh --remove --name another
 
 INSTALL_DIR="/opt/wactl"
 INSTANCES_JSON="$INSTALL_DIR/instances.json"
@@ -477,7 +477,7 @@ cat > "/etc/systemd/system/wactl-${NAME}-server.service" << EOF
 [Unit]
 Description=wactl MCP + Admin Server ($NAME)
 After=wactl-${NAME}-bridge.service
-Requires=wactl-${NAME}-bridge.service
+Wants=wactl-${NAME}-bridge.service
 
 [Service]
 Type=simple

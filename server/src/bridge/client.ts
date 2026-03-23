@@ -27,6 +27,7 @@ export interface ChatSummary {
 export interface MessageRecord {
   id: string;
   from: string;
+  senderName?: string;
   body: string;
   timestamp: number;
   isFromMe: boolean;
