@@ -57,7 +57,7 @@ The script installs Go 1.25+, Node.js 20, Caddy, fetches the latest whatsmeow, b
 
 With push notifications (topic defaults to instance name):
 ```bash
-sudo bash install.sh --name dhruv --hostname wactl.example.com --ntfy
+sudo bash install.sh --name myname --hostname wactl.example.com --ntfy
 ```
 
 Add more instances later:
@@ -185,8 +185,8 @@ sudo systemctl enable --now ntfy
 
 The installer auto-detects a local ntfy service and configures everything:
 ```bash
-sudo bash install.sh --name dhruv --hostname wactl.example.com --ntfy
-# → NTFY_SERVER=http://localhost:2586, NTFY_TOPIC=dhruv
+sudo bash install.sh --name myname --hostname wactl.example.com --ntfy
+# → NTFY_SERVER=http://localhost:2586, NTFY_TOPIC=myname
 ```
 
 Caddy automatically gets a `/ntfy/*` reverse proxy route, so mobile apps connect via HTTPS.
@@ -196,7 +196,7 @@ Caddy automatically gets a `/ntfy/*` reverse proxy route, so mobile apps connect
 ### Public ntfy.sh
 
 ```bash
-sudo bash install.sh --name dhruv --hostname wactl.example.com --ntfy --ntfy-server https://ntfy.sh
+sudo bash install.sh --name myname --hostname wactl.example.com --ntfy --ntfy-server https://ntfy.sh
 ```
 
 Use a hard-to-guess topic name since ntfy.sh topics are public.

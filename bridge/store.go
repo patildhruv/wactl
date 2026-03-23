@@ -146,7 +146,7 @@ func (s *MessageStore) GetContactName(jid string) string {
 }
 
 // GetContactNames returns a map of JID → display name for a set of sender identifiers.
-// Senders can be bare phone numbers (e.g., "917770001860") or full JIDs.
+// Senders can be bare phone numbers (e.g., "1234567890") or full JIDs.
 func (s *MessageStore) GetContactNames(senders []string) map[string]string {
 	result := make(map[string]string)
 	if len(senders) == 0 {
