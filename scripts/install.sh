@@ -477,7 +477,7 @@ cat > "/etc/systemd/system/wactl-${NAME}-server.service" << EOF
 [Unit]
 Description=wactl MCP + Admin Server ($NAME)
 After=wactl-${NAME}-bridge.service
-Requires=wactl-${NAME}-bridge.service
+Wants=wactl-${NAME}-bridge.service
 
 [Service]
 Type=simple
