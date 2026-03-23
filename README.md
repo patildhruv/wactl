@@ -4,30 +4,10 @@
     <strong>Your WhatsApp, wired directly into your LLM.</strong>
     <br />
     Self-hosted · MCP-native · Zero babysitting
-    <br /><br />
-    <a href="#quick-start">Quick Start</a> · <a href="#features">Features</a> · <a href="MAINTENANCE.md">Maintenance Guide</a> · <a href="#architecture">Architecture</a>
   </p>
 </p>
 
 <br />
-
-> **wactl** is a production-grade WhatsApp bridge that connects your personal WhatsApp account to any MCP-compatible LLM client — Claude Desktop, Cursor, VS Code Copilot, you name it. Deploy it on a server and forget about it. It updates itself, heals itself, and yells at you (via push notification) only when it genuinely needs you.
-
-Originally forked from [lharries/whatsapp-mcp](https://github.com/lharries/whatsapp-mcp). Rewritten from scratch.
-
----
-
-## The Problem
-
-Every WhatsApp MCP server has the same three failure modes:
-
-1. **WhatsApp pushes an update** → your bridge silently dies → you find out 3 days later
-2. **No auth on the MCP endpoint** → anyone on your network can read your chats
-3. **QR code expires** → SSH in, restart, scan QR from terminal, pray
-
-wactl solves all three. Auto-updates, API key auth, and a web-based admin panel for QR re-authentication — no SSH required.
-
-### Admin Panel
 
 | Dashboard | Settings | QR Auth |
 |:-:|:-:|:-:|
@@ -35,90 +15,112 @@ wactl solves all three. Auto-updates, API key auth, and a web-based admin panel 
 
 ---
 
+## How It Works
+
+1. **Install** — one command sets up everything on your server (Go, Node.js, Caddy, HTTPS)
+2. **Scan QR** — open the admin panel in your browser, scan with WhatsApp
+3. **Connect your LLM** — paste the MCP config into Claude Desktop, Cursor, or any MCP client
+4. **Done** — read messages, search contacts, send messages, download media — all from your AI
+
+wactl bridges your personal WhatsApp account to any [MCP](https://modelcontextprotocol.io)-compatible client. It runs as two processes (Go bridge + TypeScript server), updates itself daily, and notifies you if anything needs attention.
+
+---
+
 ## Features
 
 | | |
 |---|---|
-| 🔌 **WhatsApp ↔ LLM Bridge** | Read messages, search contacts, send messages, download media — all via MCP tools |
-| 🖥️ **Web Admin Panel** | Browser-based QR login with bcrypt auth. Re-authenticate from your phone, not your terminal |
-| 🔐 **API Key Auth** | Every MCP request requires `X-API-Key`. No key, no access |
-| 🔄 **Self-Healing Updates** | Daily cron fetches latest whatsmeow, builds, self-tests, and hot-swaps the binary. Rolls back on failure |
-| 📲 **Push Notifications** | Self-hosted or [ntfy.sh](https://ntfy.sh) alerts for disconnects, QR ready, reconnects, and update status |
-| 🛠️ **CLI** | `wactl status`, `wactl logs`, `wactl restart` — everything from terminal |
-| 🐳 **Docker** | Multi-stage build + docker-compose for multi-account setups |
-| ⚡ **One-Command Install** | Single `curl` command sets up everything on Ubuntu/Debian |
+| **MCP Bridge** | 7 tools — list chats, read messages, search contacts, send texts, send files, download media, check status |
+| **Web Admin Panel** | Dashboard, QR authentication, settings — all from your browser, no SSH needed |
+| **Multi-Instance** | Run multiple WhatsApp accounts on one server. Each gets its own ports, data, and credentials |
+| **API Key Auth** | Every MCP request requires `X-API-Key` or `Authorization: Bearer`. Constant-time comparison |
+| **Admin Security** | bcrypt passwords, 24h sessions, rate-limited login (5 attempts/min), httpOnly cookies |
+| **Auto-Updates** | Daily cron fetches latest whatsmeow, builds, self-tests on a temp port, hot-swaps. Rolls back on failure |
+| **Push Notifications** | Self-hosted [ntfy](https://ntfy.sh) or public ntfy.sh — alerts for disconnects, QR ready, reconnects, update status |
+| **Contact Sync** | 5000+ contacts synced from WhatsApp on connect. Push names captured from every message |
+| **Dual MCP Transport** | Streamable HTTP (`/mcp`) for modern clients + SSE (`/mcp/sse`) for legacy clients |
+| **CLI** | `wactl status` · `wactl logs` · `wactl restart` · `wactl auth` · `wactl config` |
+| **Docker** | Multi-stage build + docker-compose for multi-account setups |
+| **One-Command Install** | Single `curl` sets up Go 1.25+, Node.js 20, Caddy, HTTPS, systemd services |
+| **HTTPS by Default** | Caddy reverse proxy with automatic Let's Encrypt certificates |
 
 ---
 
 ## Quick Start
 
-### One-Command Install
+### Install
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/patildhruv/wactl/main/scripts/install.sh -o install.sh
-sudo bash install.sh --name myinstance --hostname wactl.example.com
+sudo bash install.sh --name myname --hostname wactl.example.com
 ```
 
-The script installs Go 1.25+, Node.js 20, Caddy, fetches the latest whatsmeow, builds everything, generates credentials, creates systemd services, and starts it all up. Your credentials are printed once — save them.
+Your credentials are printed once at the end — **save them**.
 
-With push notifications (topic defaults to instance name):
-```bash
-sudo bash install.sh --name myname --hostname wactl.example.com --ntfy
-```
+### Install Flags
 
-Add more instances later:
+| Flag | Description |
+|---|---|
+| `--name <name>` | Instance name (required, alphanumeric, max 32 chars) |
+| `--hostname <domain>` | Domain for HTTPS (required on first install) |
+| `--ntfy [topic]` | Enable push notifications (topic defaults to instance name) |
+| `--ntfy-server <url>` | Override ntfy server (auto-detects local ntfy) |
+| `--remove` | Remove an instance |
+
+### Add More Instances
+
 ```bash
 sudo bash /opt/wactl/scripts/install.sh --name another --ntfy
 ```
 
-### Or Clone Manually
-
-```bash
-git clone https://github.com/patildhruv/wactl.git
-cd wactl
-sudo bash scripts/install.sh --name myinstance --hostname wactl.example.com
-```
+Each instance gets unique ports, separate credentials, and its own WhatsApp session.
 
 ### Docker
 
 ```bash
 cd docker
 cp ../.env.example ../envs/primary.env
-# Edit envs/primary.env with your settings
+# Edit envs/primary.env
 docker compose up -d
 ```
 
----
+### First-Time Setup
 
-## First-Time Setup
-
-1. Open `https://<your-hostname>/<instance-name>/` in your browser
-2. Log in with the admin credentials (printed during install)
-3. Navigate to **QR Auth**
-4. Open WhatsApp on your phone → **Linked Devices** → **Link a Device**
-5. Scan the QR code
-6. Done. Session persists across restarts
+1. Open `https://<hostname>/<instance>/` in your browser
+2. Log in with the admin credentials from install
+3. Go to **QR Auth** → scan with WhatsApp (**Linked Devices** → **Link a Device**)
+4. Session persists across restarts
 
 ---
 
-## Connect Your LLM Client
+## Connect Your LLM
 
-Add to your MCP client config (e.g., Claude Desktop):
+### Claude Desktop / Claude Code
 
 ```json
 {
   "mcpServers": {
     "whatsapp": {
-      "url": "https://<your-hostname>/<instance-name>/mcp/sse",
+      "url": "https://<hostname>/<instance>/mcp",
       "headers": {
-        "X-API-Key": "<your-api-key>"
+        "Authorization": "Bearer <your-api-key>"
       }
     }
   }
 }
 ```
 
-Now ask Claude: *"Summarize my unread WhatsApp messages"* — and it just works.
+Claude Code CLI:
+```bash
+claude mcp add --transport http wactl https://<hostname>/<instance>/mcp \
+  --header "Authorization: Bearer <your-api-key>"
+```
+
+### Any MCP Client
+
+- **Streamable HTTP**: `https://<hostname>/<instance>/mcp`
+- **SSE (legacy)**: `https://<hostname>/<instance>/mcp/sse`
+- **Auth header**: `Authorization: Bearer <key>` or `X-API-Key: <key>`
 
 ---
 
@@ -129,188 +131,119 @@ Now ask Claude: *"Summarize my unread WhatsApp messages"* — and it just works.
 │            PROCESS 1: Go Bridge (port 4000)          │
 │                                                     │
 │   whatsmeow ←→ WhatsApp Web multi-device protocol  │
-│   SQLite store (sessions + messages)                │
-│   REST API (localhost only — not exposed)           │
+│   SQLite store (sessions + messages + contacts)     │
+│   REST API (localhost only — never exposed)         │
 └──────────────────────┬──────────────────────────────┘
                        │ HTTP (internal)
 ┌──────────────────────▼──────────────────────────────┐
 │            PROCESS 2: TS Server                      │
 │                                                     │
-│   MCP Server ─── JSON-RPC over SSE (port 3000)     │
+│   MCP Server ─── Streamable HTTP + SSE (port 3000) │
 │   Admin Panel ── Web UI + QR auth (port 8080)      │
 │   Callbacks ──── Bridge event handler (port 4001)  │
 │   Updater ────── Daily whatsmeow auto-update       │
+│   Notify ─────── Push notifications (ntfy)         │
 │   CLI ────────── wactl command wrapper             │
-│   Notify ─────── Push notifications (self-hosted/ntfy.sh) │
 └─────────────────────────────────────────────────────┘
+        │
+        ├──→ Caddy reverse proxy ──→ HTTPS (Let's Encrypt)
+        └──→ LLM clients (Claude, Cursor, etc.)
 ```
 
 ---
 
 ## Configuration
 
-Copy `.env.example` to `.env` and configure:
+All settings are in the instance `.env` file (auto-generated by the installer).
 
-| Variable | Description | Default |
+| Variable | Default | Description |
 |---|---|---|
-| `MCP_API_KEY` | API key for MCP endpoint | Auto-generated |
-| `ADMIN_PASSWORD_HASH` | bcrypt hash of admin password | Auto-generated |
-| `ADMIN_USER` | Admin panel username | `admin` |
-| `ADMIN_PORT` | Web admin panel port | `8080` |
-| `MCP_PORT` | MCP SSE server port | `3000` |
-| `BRIDGE_PORT` | Internal Go bridge port | `4000` |
-| `NOTIFY_METHOD` | `ntfy` or `none` | `none` |
-| `NTFY_TOPIC` | ntfy topic name | instance name |
-| `NTFY_SERVER` | ntfy server URL | `http://localhost:2586` (if local ntfy detected) or `https://ntfy.sh` |
-| `AUTO_UPDATE` | Enable daily update checks | `true` |
-| `AUTO_UPDATE_CRON` | Cron schedule for updates | `0 3 * * *` |
-| `DATA_DIR` | Path to SQLite + session data | `./data` |
+| `MCP_API_KEY` | auto-generated | API key for MCP endpoint |
+| `ADMIN_PASSWORD_HASH` | auto-generated | bcrypt hash of admin password |
+| `ADMIN_USER` | `admin` | Admin panel username |
+| `ADMIN_PORT` | `8080` | Admin panel port |
+| `MCP_PORT` | `3000` | MCP server port |
+| `BRIDGE_PORT` | `4000` | Go bridge port (localhost only) |
+| `NOTIFY_METHOD` | `none` | `ntfy` or `none` |
+| `NTFY_TOPIC` | instance name | ntfy topic |
+| `NTFY_SERVER` | auto-detected | `http://localhost:2586` or `https://ntfy.sh` |
+| `AUTO_UPDATE` | `true` | Daily whatsmeow update checks |
+| `AUTO_UPDATE_CRON` | `0 3 * * *` | Update schedule |
+| `BASE_PATH` | `/<instance>` | URL prefix for multi-instance routing |
+| `DATA_DIR` | `./data` | SQLite + session storage path |
 
 ---
 
-## Push Notifications
+## MCP Tools
 
-wactl sends push notifications for disconnects, QR ready, reconnects, auto-update success, and auto-update failures. You can use the public [ntfy.sh](https://ntfy.sh) service or self-host ntfy on the same server.
-
-### Self-hosted ntfy (recommended)
-
-Keeps notifications private — no public topics.
-
-```bash
-# Install ntfy
-sudo apt install ntfy
-
-# Configure /etc/ntfy/server.yml:
-#   base-url: "https://your-hostname.com"
-#   listen-http: ":2586"
-#   behind-proxy: true
-#   cache-file: "/var/cache/ntfy/cache.db"
-
-sudo systemctl enable --now ntfy
-```
-
-The installer auto-detects a local ntfy service and configures everything:
-```bash
-sudo bash install.sh --name myname --hostname wactl.example.com --ntfy
-# → NTFY_SERVER=http://localhost:2586, NTFY_TOPIC=myname
-```
-
-Caddy automatically gets a `/ntfy/*` reverse proxy route, so mobile apps connect via HTTPS.
-
-**Android/iOS app setup:** Add server `https://<your-hostname>/ntfy` → subscribe to topic `<instance-name>`.
-
-### Public ntfy.sh
-
-```bash
-sudo bash install.sh --name myname --hostname wactl.example.com --ntfy --ntfy-server https://ntfy.sh
-```
-
-Use a hard-to-guess topic name since ntfy.sh topics are public.
-
-### Install flags
-
-| Flag | Description |
-|---|---|
-| `--ntfy` | Enable notifications, topic defaults to instance name |
-| `--ntfy <topic>` | Enable with a custom topic name |
-| `--ntfy-server <url>` | Override ntfy server URL |
+| Tool | Description | Parameters |
+|---|---|---|
+| `list_chats` | List conversations with last message | `limit?: number` |
+| `get_chat` | Message history with sender names | `chatId, limit?` |
+| `search_contacts` | Search by name, push name, or number | `query` |
+| `send_message` | Send a text message | `to, body` |
+| `send_file` | Send a file or image | `to, filePath, caption?` |
+| `download_media` | Download media from a message | `messageId` |
+| `get_connection_status` | Check bridge health | — |
 
 ---
 
 ## CLI
 
 ```bash
-wactl status     # Connection health, uptime, MCP status
-wactl logs       # Tail live logs
+wactl status     # Connection, uptime, MCP clients, last update
+wactl logs       # Tail live logs (journalctl)
 wactl restart    # Restart bridge + server
-wactl update     # Trigger manual update check
 wactl auth       # QR status + admin panel URL
-wactl config     # Print current config (secrets redacted)
+wactl config     # Print config (secrets redacted)
 ```
 
 ---
 
-## MCP Tools
+## Push Notifications
 
-These are the tools your LLM client gets access to:
+Alerts for: disconnects, QR ready, reconnects, auto-update success/failure.
 
-| Tool | What It Does | Parameters |
-|---|---|---|
-| `list_chats` | List all conversations | `limit?: number` |
-| `get_chat` | Get message history for a chat | `chatId: string, limit?: number` |
-| `search_contacts` | Search contacts by name/number | `query: string` |
-| `send_message` | Send a text message | `to: string, body: string` |
-| `send_file` | Send a file or image | `to: string, filePath: string, caption?: string` |
-| `download_media` | Download media from a message | `messageId: string` |
-| `get_connection_status` | Check if bridge is connected | — |
-
----
-
-## Project Structure
-
-```
-wactl/
-├── bridge/                 # Go — WhatsApp protocol bridge
-│   ├── main.go             # Entry point, whatsmeow client setup
-│   ├── handlers.go         # Event handlers (QR, messages, history sync)
-│   ├── api.go              # Internal REST API
-│   └── store.go            # SQLite operations
-├── server/                 # TypeScript — MCP + admin + everything else
-│   └── src/
-│       ├── index.ts        # Entry point
-│       ├── mcp/            # MCP JSON-RPC server + tool definitions
-│       ├── admin/          # Admin panel (routes + HTML views)
-│       ├── bridge/         # HTTP client for Go bridge API
-│       ├── notify/         # ntfy.sh integration
-│       ├── updater/        # Auto-update logic
-│       └── cli/            # CLI (wactl command)
-├── docker/                 # Dockerfile + docker-compose
-│   ├── Dockerfile          # Multi-stage (Go builder → Node builder → runtime)
-│   ├── docker-compose.yml  # Multi-account support
-│   └── entrypoint.sh
-├── scripts/
-│   ├── install.sh          # One-command installer
-│   └── update-check.sh     # Auto-updater (cron)
-├── MAINTENANCE.md          # ← You should read this
-├── .env.example
-├── CONTRIBUTING.md
-└── LICENSE
+**Self-hosted ntfy** (recommended — keeps notifications private):
+```bash
+sudo apt install ntfy
+# Configure /etc/ntfy/server.yml → listen-http: ":2586", behind-proxy: true
+sudo systemctl enable --now ntfy
+sudo bash install.sh --name myname --hostname wactl.example.com --ntfy
 ```
 
----
+Mobile app: add server `https://<hostname>/ntfy` → subscribe to topic `<instance-name>`.
 
-## Security
-
-- **Admin panel** — bcrypt-hashed passwords, 24h session expiry, rate-limited login (5 attempts/min)
-- **MCP endpoint** — `X-API-Key` header required on every request
-- **Bridge API** — binds to `localhost:4000` only, never exposed externally
-- **Data** — all messages stored locally in SQLite, nothing phones home
-
----
-
-## Maintenance
-
-wactl is built on an unofficial WhatsApp API. Things will break. That's expected.
-
-Read **[MAINTENANCE.md](MAINTENANCE.md)** for:
-- What breaks and why (spoiler: WhatsApp updates, every time)
-- Known whatsmeow breaking change patterns
-- The auto-updater's logic and its limits
-- Manual update procedures
-- Emergency playbook for "everything is down"
-- Database backup and migration
+**Public ntfy.sh:**
+```bash
+sudo bash install.sh --name myname --hostname wactl.example.com --ntfy --ntfy-server https://ntfy.sh
+```
 
 ---
 
 ## Troubleshooting
 
-| Problem | Quick Fix |
+| Problem | Fix |
 |---|---|
-| `Client outdated (405)` | `cd /opt/wactl/bridge && GOFLAGS="-mod=mod" go get go.mau.fi/whatsmeow@latest && go mod tidy && CGO_ENABLED=1 go build -o wactl-bridge . && cp wactl-bridge /opt/wactl/instances/<name>/wactl-bridge && systemctl restart wactl-<name>-bridge` |
-| QR won't scan | Update WhatsApp on your phone. Remove a linked device if you have 4. |
-| Disconnects after ~20 min | Update whatsmeow (see above). Check WhatsApp phone app is updated. |
-| Build fails after update | Likely a `context.Context` parameter change — see [MAINTENANCE.md](MAINTENANCE.md#whatsmeow-breaking-changes) |
-| Empty chat list | Wait 2-5 minutes after first connection for history sync |
+| `Client outdated (405)` | Update whatsmeow: `cd /opt/wactl/bridge && GOFLAGS="-mod=mod" go get go.mau.fi/whatsmeow@latest && go mod tidy && CGO_ENABLED=1 go build -o wactl-bridge .` then copy binary to instance and restart |
+| QR won't scan | Update WhatsApp on your phone. Remove a linked device if you have 4 |
+| Disconnects after ~20 min | Update whatsmeow (see above). Ensure phone app is updated |
+| Build fails after update | Likely a `context.Context` parameter change — see [MAINTENANCE.md](MAINTENANCE.md) |
+| Empty chat list | Wait 2-5 min after first connection for history sync |
+| Bridge starts, server doesn't | `systemctl start wactl-<name>-server` — server uses `Wants` dependency, doesn't auto-restart with bridge |
+
+For deep maintenance, breaking change patterns, and emergency playbook — see **[MAINTENANCE.md](MAINTENANCE.md)**.
+
+---
+
+## Disclaimer
+
+wactl uses [whatsmeow](https://github.com/tulir/whatsmeow), an unofficial, reverse-engineered implementation of the WhatsApp Web multi-device API. It is **not affiliated with, endorsed by, or connected to WhatsApp or Meta** in any way.
+
+- WhatsApp does not provide a public API for personal accounts. This project relies on an unofficial protocol implementation that may break at any time
+- Using unofficial clients may violate WhatsApp's Terms of Service and could result in your account being banned
+- The authors are not responsible for any consequences of using this software, including account bans, data loss, or service disruption
+- **Use at your own risk**
 
 ---
 
