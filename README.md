@@ -27,6 +27,12 @@ Every WhatsApp MCP server has the same three failure modes:
 
 wactl solves all three. Auto-updates, API key auth, and a web-based admin panel for QR re-authentication — no SSH required.
 
+### Admin Panel
+
+| Dashboard | Settings | QR Auth |
+|:-:|:-:|:-:|
+| ![Dashboard](docs/screenshots/dashboard.png) | ![Settings](docs/screenshots/settings.png) | ![QR Auth](docs/screenshots/qr-auth.png) |
+
 ---
 
 ## Features
