@@ -37,7 +37,7 @@ wactl solves all three. Auto-updates, API key auth, and a web-based admin panel 
 | 🖥️ **Web Admin Panel** | Browser-based QR login with bcrypt auth. Re-authenticate from your phone, not your terminal |
 | 🔐 **API Key Auth** | Every MCP request requires `X-API-Key`. No key, no access |
 | 🔄 **Self-Healing Updates** | Daily cron fetches latest whatsmeow, builds, self-tests, and hot-swaps the binary. Rolls back on failure |
-| 📲 **Push Notifications** | [ntfy.sh](https://ntfy.sh) alerts when QR re-scan is needed or updates fail |
+| 📲 **Push Notifications** | Self-hosted or [ntfy.sh](https://ntfy.sh) alerts for disconnects, QR ready, reconnects, and update status |
 | 🛠️ **CLI** | `wactl status`, `wactl logs`, `wactl restart` — everything from terminal |
 | 🐳 **Docker** | Multi-stage build + docker-compose for multi-account setups |
 | ⚡ **One-Command Install** | Single `curl` command sets up everything on Ubuntu/Debian |
@@ -55,9 +55,14 @@ sudo bash install.sh --name myinstance --hostname wactl.example.com
 
 The script installs Go 1.25+, Node.js 20, Caddy, fetches the latest whatsmeow, builds everything, generates credentials, creates systemd services, and starts it all up. Your credentials are printed once — save them.
 
+With push notifications (topic defaults to instance name):
+```bash
+sudo bash install.sh --name dhruv --hostname wactl.example.com --ntfy
+```
+
 Add more instances later:
 ```bash
-sudo bash /opt/wactl/scripts/install.sh --name another
+sudo bash /opt/wactl/scripts/install.sh --name another --ntfy
 ```
 
 ### Or Clone Manually
@@ -130,7 +135,7 @@ Now ask Claude: *"Summarize my unread WhatsApp messages"* — and it just works.
 │   Callbacks ──── Bridge event handler (port 4001)  │
 │   Updater ────── Daily whatsmeow auto-update       │
 │   CLI ────────── wactl command wrapper             │
-│   Notify ─────── ntfy.sh push notifications        │
+│   Notify ─────── Push notifications (self-hosted/ntfy.sh) │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -149,10 +154,60 @@ Copy `.env.example` to `.env` and configure:
 | `MCP_PORT` | MCP SSE server port | `3000` |
 | `BRIDGE_PORT` | Internal Go bridge port | `4000` |
 | `NOTIFY_METHOD` | `ntfy` or `none` | `none` |
-| `NTFY_TOPIC` | ntfy.sh topic name | — |
+| `NTFY_TOPIC` | ntfy topic name | instance name |
+| `NTFY_SERVER` | ntfy server URL | `http://localhost:2586` (if local ntfy detected) or `https://ntfy.sh` |
 | `AUTO_UPDATE` | Enable daily update checks | `true` |
 | `AUTO_UPDATE_CRON` | Cron schedule for updates | `0 3 * * *` |
 | `DATA_DIR` | Path to SQLite + session data | `./data` |
+
+---
+
+## Push Notifications
+
+wactl sends push notifications for disconnects, QR ready, reconnects, auto-update success, and auto-update failures. You can use the public [ntfy.sh](https://ntfy.sh) service or self-host ntfy on the same server.
+
+### Self-hosted ntfy (recommended)
+
+Keeps notifications private — no public topics.
+
+```bash
+# Install ntfy
+sudo apt install ntfy
+
+# Configure /etc/ntfy/server.yml:
+#   base-url: "https://your-hostname.com"
+#   listen-http: ":2586"
+#   behind-proxy: true
+#   cache-file: "/var/cache/ntfy/cache.db"
+
+sudo systemctl enable --now ntfy
+```
+
+The installer auto-detects a local ntfy service and configures everything:
+```bash
+sudo bash install.sh --name dhruv --hostname wactl.example.com --ntfy
+# → NTFY_SERVER=http://localhost:2586, NTFY_TOPIC=dhruv
+```
+
+Caddy automatically gets a `/ntfy/*` reverse proxy route, so mobile apps connect via HTTPS.
+
+**Android/iOS app setup:** Add server `https://<your-hostname>/ntfy` → subscribe to topic `<instance-name>`.
+
+### Public ntfy.sh
+
+```bash
+sudo bash install.sh --name dhruv --hostname wactl.example.com --ntfy --ntfy-server https://ntfy.sh
+```
+
+Use a hard-to-guess topic name since ntfy.sh topics are public.
+
+### Install flags
+
+| Flag | Description |
+|---|---|
+| `--ntfy` | Enable notifications, topic defaults to instance name |
+| `--ntfy <topic>` | Enable with a custom topic name |
+| `--ntfy-server <url>` | Override ntfy server URL |
 
 ---
 
