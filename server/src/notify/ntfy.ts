@@ -1,8 +1,10 @@
 import https from "https";
+import http from "http";
 
 interface NotifyConfig {
   method: string; // "ntfy" or "none"
   ntfyTopic?: string;
+  ntfyServer?: string; // e.g. "http://localhost:2586" or "https://ntfy.sh"
   serverIP?: string;
   serverHostname?: string;
   basePath?: string;
@@ -19,7 +21,7 @@ export class Notifier {
     this.config = config;
   }
 
-  async notify(event: string, title: string, body: string): Promise<void> {
+  async notify(event: string, title: string, body: string, priority: string = "urgent"): Promise<void> {
     if (this.config.method !== "ntfy" || !this.config.ntfyTopic) {
       return;
     }
@@ -42,16 +44,18 @@ export class Notifier {
       clickURL = `http://${this.config.serverIP}:${this.config.adminPort}/auth`;
     }
 
-    const url = `https://ntfy.sh/${this.config.ntfyTopic}`;
+    const server = this.config.ntfyServer || "https://ntfy.sh";
+    const url = `${server.replace(/\/+$/, "")}/${this.config.ntfyTopic}`;
+    const transport = url.startsWith("https") ? https : http;
 
     return new Promise((resolve) => {
-      const req = https.request(
+      const req = transport.request(
         url,
         {
           method: "POST",
           headers: {
             Title: title,
-            Priority: "urgent",
+            Priority: priority,
             ...(clickURL ? { Click: clickURL } : {}),
           },
         },
@@ -79,6 +83,32 @@ export class Notifier {
       "update_failed",
       "wactl — Auto-update Failed",
       `Auto-update to ${version} failed. Manual review needed.`
+    );
+  }
+
+  async notifyQRReady(): Promise<void> {
+    await this.notify(
+      "qr_ready",
+      "wactl — QR Code Ready",
+      "WhatsApp needs re-authentication. Tap to scan QR code."
+    );
+  }
+
+  async notifyConnected(account: string): Promise<void> {
+    await this.notify(
+      "connected",
+      "wactl — Connected",
+      `WhatsApp session restored (account: ${account}).`,
+      "default"
+    );
+  }
+
+  async notifyUpdateSuccess(version: string): Promise<void> {
+    await this.notify(
+      "update_success",
+      "wactl — Updated",
+      `whatsmeow updated to ${version}. Bridge restarted.`,
+      "default"
     );
   }
 }

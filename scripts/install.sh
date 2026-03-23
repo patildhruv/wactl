@@ -4,9 +4,11 @@ set -e
 # wactl — Multi-Instance Installer with HTTPS via Caddy
 # Usage:
 #   First install:  sudo bash install.sh --name dhruv --hostname wactl.example.com
-#   With ntfy:      sudo bash install.sh --name dhruv --hostname wactl.example.com --ntfy my-wactl-alerts
+#   With ntfy:      sudo bash install.sh --name dhruv --hostname wactl.example.com --ntfy
+#   Custom topic:   sudo bash install.sh --name dhruv --hostname wactl.example.com --ntfy my-topic
+#   Custom server:  sudo bash install.sh --name dhruv --ntfy --ntfy-server http://localhost:2586
 #   Add instance:   sudo bash install.sh --name dad
-#   Add with ntfy:  sudo bash install.sh --name dad --ntfy dads-wactl
+#   Add with ntfy:  sudo bash install.sh --name dad --ntfy
 #   Remove instance: sudo bash install.sh --remove --name dad
 
 INSTALL_DIR="/opt/wactl"
@@ -19,13 +21,22 @@ CADDYFILE="$INSTALL_DIR/Caddyfile"
 NAME=""
 HOSTNAME=""
 NTFY_TOPIC=""
+NTFY_SERVER=""
 REMOVE=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --name) NAME="$2"; shift 2 ;;
     --hostname) HOSTNAME="$2"; shift 2 ;;
-    --ntfy) NTFY_TOPIC="$2"; shift 2 ;;
+    --ntfy)
+      # --ntfy with optional value: if next arg is missing or another flag, default to instance name
+      if [[ -n "${2:-}" && "$2" != --* ]]; then
+        NTFY_TOPIC="$2"; shift 2
+      else
+        NTFY_TOPIC="__USE_INSTANCE_NAME__"; shift
+      fi
+      ;;
+    --ntfy-server) NTFY_SERVER="$2"; shift 2 ;;
     --remove) REMOVE=true; shift ;;
     *) echo "Unknown option: $1"; exit 1 ;;
   esac
@@ -76,6 +87,20 @@ fi
 
 validate_name "$NAME"
 
+# Resolve ntfy topic: default to instance name when --ntfy passed without a value
+if [ "$NTFY_TOPIC" = "__USE_INSTANCE_NAME__" ]; then
+  NTFY_TOPIC="$NAME"
+fi
+
+# Auto-detect ntfy server: if ntfy is running locally and no --ntfy-server given, use localhost
+if [ -n "$NTFY_TOPIC" ] && [ -z "$NTFY_SERVER" ]; then
+  if systemctl is-active ntfy >/dev/null 2>&1; then
+    NTFY_SERVER="http://localhost:2586"
+  else
+    NTFY_SERVER="https://ntfy.sh"
+  fi
+fi
+
 # ---------------------------------------------------------------------------
 # Detect first run vs subsequent run
 # ---------------------------------------------------------------------------
@@ -92,6 +117,13 @@ generate_caddyfile() {
   hostname=$(jq -r '.hostname' "$INSTANCES_JSON")
   {
     echo "${hostname} {"
+    # Reverse proxy for self-hosted ntfy (if running locally)
+    if systemctl is-active ntfy >/dev/null 2>&1; then
+      echo "    handle /ntfy/* {"
+      echo "        uri strip_prefix /ntfy"
+      echo "        reverse_proxy localhost:2586"
+      echo "    }"
+    fi
     # Sort instances by name for deterministic output
     # MCP routes MUST come before admin routes (more specific first)
     jq -r '.instances | to_entries | sort_by(.key)[] | "\(.key) \(.value.mcp_port) \(.value.admin_port)"' "$INSTANCES_JSON" | while read -r inst_name mcp_port admin_port; do
@@ -414,6 +446,7 @@ BASE_PATH=/$NAME
 ENV_FILE_PATH=$INSTANCE_DIR/.env
 NOTIFY_METHOD=${NOTIFY_METHOD}
 NTFY_TOPIC=${NTFY_TOPIC}
+NTFY_SERVER=${NTFY_SERVER}
 SERVER_HOSTNAME=${HOSTNAME}
 AUTO_UPDATE=true
 EOF
@@ -572,9 +605,15 @@ echo "    }"
 echo "  }"
 echo ""
 if [ -n "$NTFY_TOPIC" ]; then
-  echo "  Notifications: ntfy.sh/$NTFY_TOPIC"
-  echo "  Subscribe:     https://ntfy.sh/$NTFY_TOPIC"
-  echo "                 (or install ntfy app and add topic)"
+  if [[ "$NTFY_SERVER" == *"localhost"* ]]; then
+    echo "  Notifications: self-hosted ntfy, topic '$NTFY_TOPIC'"
+    echo "  Subscribe:     https://${HOSTNAME}/ntfy/$NTFY_TOPIC"
+    echo "                 (ntfy app → add server https://${HOSTNAME}/ntfy → topic $NTFY_TOPIC)"
+  else
+    echo "  Notifications: ntfy.sh/$NTFY_TOPIC"
+    echo "  Subscribe:     https://ntfy.sh/$NTFY_TOPIC"
+    echo "                 (or install ntfy app and add topic)"
+  fi
   echo ""
 fi
 echo "  Save these credentials — the password"
