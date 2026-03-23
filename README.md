@@ -251,6 +251,8 @@ wactl uses [whatsmeow](https://github.com/tulir/whatsmeow), an unofficial, rever
 - The authors are not responsible for any consequences of using this software, including account bans, data loss, or service disruption
 - **Use at your own risk**
 
+That said — bridges like [mautrix-whatsapp](https://github.com/mautrix/whatsapp) have been running on this same protocol for 8 years with thousands of users and no mass bans. Read **[WHATSAPP-TOS.md](WHATSAPP-TOS.md)** for the full context on what actually gets enforced and why.
+
 ---
 
 ## License
