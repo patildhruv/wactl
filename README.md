@@ -206,15 +206,21 @@ Alerts for: disconnects, QR ready, reconnects, auto-update success/failure.
 
 **Self-hosted ntfy** (recommended — keeps notifications private):
 ```bash
-sudo apt install ntfy
-# Configure /etc/ntfy/server.yml → listen-http: ":2586", behind-proxy: true
-sudo systemctl enable --now ntfy
 sudo bash install.sh --name myname --hostname wactl.example.com --ntfy
+# → Prompts to install ntfy locally if not present
+# → Configures port 2586, reverse proxy via Caddy, enables systemd
+# → NTFY_TOPIC defaults to instance name ("myname")
 ```
 
-Mobile app: add server `https://<hostname>/ntfy` → subscribe to topic `<instance-name>`.
+Each instance gets its own topic automatically:
+```bash
+sudo bash install.sh --name myname --ntfy   # → topic: myname
+sudo bash install.sh --name dad --ntfy      # → topic: dad (ntfy already installed, no prompt)
+```
 
-**Public ntfy.sh:**
+Mobile app: add server `https://<hostname>/ntfy` → subscribe to your instance name as topic.
+
+**Public ntfy.sh** (use a hard-to-guess topic since topics are public):
 ```bash
 sudo bash install.sh --name myname --hostname wactl.example.com --ntfy --ntfy-server https://ntfy.sh
 ```
