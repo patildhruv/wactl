@@ -92,12 +92,51 @@ if [ "$NTFY_TOPIC" = "__USE_INSTANCE_NAME__" ]; then
   NTFY_TOPIC="$NAME"
 fi
 
-# Auto-detect ntfy server: if ntfy is running locally and no --ntfy-server given, use localhost
+# Auto-detect or install ntfy server
 if [ -n "$NTFY_TOPIC" ] && [ -z "$NTFY_SERVER" ]; then
   if systemctl is-active ntfy >/dev/null 2>&1; then
     NTFY_SERVER="http://localhost:2586"
+  elif command -v ntfy >/dev/null 2>&1; then
+    # ntfy installed but not running — start it
+    systemctl enable --now ntfy >/dev/null 2>&1 || true
+    if systemctl is-active ntfy >/dev/null 2>&1; then
+      NTFY_SERVER="http://localhost:2586"
+    else
+      NTFY_SERVER="https://ntfy.sh"
+    fi
   else
-    NTFY_SERVER="https://ntfy.sh"
+    # ntfy not installed — ask the user
+    echo ""
+    echo "  ntfy is not installed on this server."
+    echo "  Self-hosting ntfy keeps notifications private (recommended)."
+    echo "  Otherwise, the public ntfy.sh service will be used."
+    echo ""
+    read -r -p "  Install ntfy locally? [y/N] " INSTALL_NTFY
+    if [[ "$INSTALL_NTFY" =~ ^[Yy]$ ]]; then
+      echo "  Installing ntfy..."
+      mkdir -p /etc/apt/keyrings
+      curl -fsSL https://archive.heckel.io/apt/pubkey.txt | gpg --dearmor -o /etc/apt/keyrings/archive.heckel.io.gpg 2>/dev/null
+      echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/archive.heckel.io.gpg] https://archive.heckel.io/apt debian main" > /etc/apt/sources.list.d/archive.heckel.io.list
+      apt-get update -qq 2>/dev/null
+      apt-get install -y -qq ntfy 2>/dev/null
+      # Configure for reverse proxy
+      mkdir -p /etc/ntfy
+      cat > /etc/ntfy/server.yml << NTFYEOF
+listen-http: ":2586"
+behind-proxy: true
+NTFYEOF
+      systemctl enable --now ntfy >/dev/null 2>&1
+      if systemctl is-active ntfy >/dev/null 2>&1; then
+        echo "  ntfy installed and running on port 2586"
+        NTFY_SERVER="http://localhost:2586"
+      else
+        echo "  WARNING: ntfy installed but failed to start. Falling back to ntfy.sh"
+        NTFY_SERVER="https://ntfy.sh"
+      fi
+    else
+      echo "  Using public ntfy.sh"
+      NTFY_SERVER="https://ntfy.sh"
+    fi
   fi
 fi
 
