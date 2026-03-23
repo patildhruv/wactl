@@ -118,6 +118,7 @@ func main() {
 		}
 		bridge.mu.Unlock()
 		logger.Infof("Reconnected with existing session (account: %s)", bridge.Account)
+		go bridge.SyncContacts()
 	}
 
 	// Start HTTP API

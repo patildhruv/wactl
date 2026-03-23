@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -50,6 +51,13 @@ func NewMessageStore(dataDir string) (*MessageStore, error) {
 			PRIMARY KEY (id, chat_jid)
 		);
 		CREATE INDEX IF NOT EXISTS idx_messages_chat_ts ON messages(chat_jid, timestamp DESC);
+		CREATE TABLE IF NOT EXISTS contacts (
+			jid TEXT PRIMARY KEY,
+			push_name TEXT,
+			full_name TEXT,
+			updated_at TIMESTAMP
+		);
+		CREATE INDEX IF NOT EXISTS idx_contacts_name ON contacts(push_name, full_name);
 	`); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("create tables: %w", err)
@@ -73,6 +81,118 @@ func (s *MessageStore) UpsertChat(jid, name string, lastMsgTime time.Time) error
 		jid, name, lastMsgTime,
 	)
 	return err
+}
+
+// ContactEntry is used for bulk contact imports.
+type ContactEntry struct {
+	JID      string
+	PushName string
+	FullName string
+}
+
+// UpsertContact inserts or updates a contact record.
+func (s *MessageStore) UpsertContact(jid, pushName, fullName string) error {
+	_, err := s.db.Exec(
+		`INSERT INTO contacts (jid, push_name, full_name, updated_at) VALUES (?, ?, ?, ?)
+		 ON CONFLICT(jid) DO UPDATE SET
+			push_name = COALESCE(NULLIF(excluded.push_name, ''), contacts.push_name),
+			full_name = COALESCE(NULLIF(excluded.full_name, ''), contacts.full_name),
+			updated_at = excluded.updated_at`,
+		jid, pushName, fullName, time.Now(),
+	)
+	return err
+}
+
+// BulkUpsertContacts inserts or updates multiple contacts in a single transaction.
+func (s *MessageStore) BulkUpsertContacts(entries []ContactEntry) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(
+		`INSERT INTO contacts (jid, push_name, full_name, updated_at) VALUES (?, ?, ?, ?)
+		 ON CONFLICT(jid) DO UPDATE SET
+			push_name = COALESCE(NULLIF(excluded.push_name, ''), contacts.push_name),
+			full_name = COALESCE(NULLIF(excluded.full_name, ''), contacts.full_name),
+			updated_at = excluded.updated_at`,
+	)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	now := time.Now()
+	for _, e := range entries {
+		if _, err := stmt.Exec(e.JID, e.PushName, e.FullName, now); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// GetContactName returns the best available name for a single JID.
+func (s *MessageStore) GetContactName(jid string) string {
+	var name string
+	err := s.db.QueryRow(
+		`SELECT COALESCE(NULLIF(full_name,''), NULLIF(push_name,''), '') FROM contacts WHERE jid = ?`,
+		jid,
+	).Scan(&name)
+	if err != nil {
+		return ""
+	}
+	return name
+}
+
+// GetContactNames returns a map of JID → display name for a set of sender identifiers.
+// Senders can be bare phone numbers (e.g., "917770001860") or full JIDs.
+func (s *MessageStore) GetContactNames(senders []string) map[string]string {
+	result := make(map[string]string)
+	if len(senders) == 0 {
+		return result
+	}
+
+	// Normalize bare numbers to full JIDs for lookup
+	jids := make([]string, len(senders))
+	jidToSender := make(map[string]string)
+	for i, sender := range senders {
+		jid := sender
+		if !strings.Contains(sender, "@") {
+			jid = sender + "@s.whatsapp.net"
+		}
+		jids[i] = jid
+		jidToSender[jid] = sender
+	}
+
+	// Build query with placeholders
+	placeholders := make([]string, len(jids))
+	args := make([]interface{}, len(jids))
+	for i, jid := range jids {
+		placeholders[i] = "?"
+		args[i] = jid
+	}
+
+	rows, err := s.db.Query(
+		`SELECT jid, COALESCE(NULLIF(full_name,''), NULLIF(push_name,''), '')
+		 FROM contacts WHERE jid IN (`+strings.Join(placeholders, ",")+`)`,
+		args...,
+	)
+	if err != nil {
+		return result
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var jid, name string
+		if err := rows.Scan(&jid, &name); err == nil && name != "" {
+			// Map back to the original sender key
+			if sender, ok := jidToSender[jid]; ok {
+				result[sender] = name
+			}
+		}
+	}
+	return result
 }
 
 // StoreMessage inserts a message, skipping empty ones.
@@ -100,9 +220,16 @@ type ChatSummary struct {
 }
 
 // GetChats returns all chats ordered by most recent message.
+// Names are resolved from the contacts table when the chats table has no name.
 func (s *MessageStore) GetChats() ([]ChatSummary, error) {
 	rows, err := s.db.Query(`
-		SELECT c.jid, c.name,
+		SELECT c.jid,
+			COALESCE(
+				NULLIF(ct.full_name,''),
+				NULLIF(ct.push_name,''),
+				NULLIF(c.name,''),
+				c.jid
+			),
 			COALESCE((
 				SELECT m.content FROM messages m
 				WHERE m.chat_jid = c.jid
@@ -110,6 +237,7 @@ func (s *MessageStore) GetChats() ([]ChatSummary, error) {
 			), ''),
 			c.last_message_time, c.unread_count
 		FROM chats c
+		LEFT JOIN contacts ct ON ct.jid = c.jid
 		ORDER BY c.last_message_time DESC
 	`)
 	if err != nil {
@@ -132,16 +260,17 @@ func (s *MessageStore) GetChats() ([]ChatSummary, error) {
 
 // MessageRecord is returned by GetMessages.
 type MessageRecord struct {
-	ID        string `json:"id"`
-	From      string `json:"from"`
-	Body      string `json:"body"`
-	Timestamp int64  `json:"timestamp"`
-	IsFromMe  bool   `json:"isFromMe"`
-	HasMedia  bool   `json:"hasMedia"`
-	MediaType string `json:"mediaType,omitempty"`
+	ID         string `json:"id"`
+	From       string `json:"from"`
+	SenderName string `json:"senderName,omitempty"`
+	Body       string `json:"body"`
+	Timestamp  int64  `json:"timestamp"`
+	IsFromMe   bool   `json:"isFromMe"`
+	HasMedia   bool   `json:"hasMedia"`
+	MediaType  string `json:"mediaType,omitempty"`
 }
 
-// GetMessages returns messages for a chat, newest first, with limit and optional before-timestamp filter.
+// GetMessages returns messages for a chat, newest first, with sender names resolved.
 func (s *MessageStore) GetMessages(chatJID string, limit int, before int64) ([]MessageRecord, error) {
 	var rows *sql.Rows
 	var err error
@@ -167,6 +296,7 @@ func (s *MessageStore) GetMessages(chatJID string, limit int, before int64) ([]M
 	defer rows.Close()
 
 	var msgs []MessageRecord
+	senderSet := make(map[string]bool)
 	for rows.Next() {
 		var m MessageRecord
 		var ts time.Time
@@ -179,9 +309,26 @@ func (s *MessageStore) GetMessages(chatJID string, limit int, before int64) ([]M
 			m.HasMedia = true
 			m.MediaType = mediaType.String
 		}
+		senderSet[m.From] = true
 		msgs = append(msgs, m)
 	}
-	return msgs, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Resolve sender names in batch
+	senders := make([]string, 0, len(senderSet))
+	for sender := range senderSet {
+		senders = append(senders, sender)
+	}
+	nameMap := s.GetContactNames(senders)
+	for i := range msgs {
+		if name, ok := nameMap[msgs[i].From]; ok {
+			msgs[i].SenderName = name
+		}
+	}
+
+	return msgs, nil
 }
 
 // ContactRecord is returned by SearchContacts.
@@ -192,8 +339,7 @@ type ContactRecord struct {
 	IsGroup bool   `json:"isGroup"`
 }
 
-// SearchContacts searches chats by name (used as a contacts proxy).
-// An empty query returns all contacts.
+// SearchContacts searches contacts and chats by name or phone number.
 func (s *MessageStore) SearchContacts(query string) ([]ContactRecord, error) {
 	var pattern string
 	if query == "" {
@@ -202,8 +348,22 @@ func (s *MessageStore) SearchContacts(query string) ([]ContactRecord, error) {
 		pattern = "%" + query + "%"
 	}
 	rows, err := s.db.Query(
-		`SELECT jid, name FROM chats WHERE name LIKE ? ORDER BY last_message_time DESC LIMIT 50`,
-		pattern,
+		`SELECT sub.jid,
+			COALESCE(NULLIF(sub.full_name,''), NULLIF(sub.push_name,''), NULLIF(sub.chat_name,''), sub.jid) AS display_name
+		FROM (
+			SELECT ct.jid, ct.full_name, ct.push_name, COALESCE(ch.name,'') AS chat_name, ch.last_message_time
+			FROM contacts ct
+			LEFT JOIN chats ch ON ch.jid = ct.jid
+			WHERE ct.full_name LIKE ? OR ct.push_name LIKE ? OR ct.jid LIKE ?
+			UNION
+			SELECT ch.jid, '' AS full_name, '' AS push_name, ch.name AS chat_name, ch.last_message_time
+			FROM chats ch
+			WHERE ch.jid NOT IN (SELECT jid FROM contacts)
+				AND (ch.name LIKE ? OR ch.jid LIKE ?)
+		) sub
+		ORDER BY sub.last_message_time DESC NULLS LAST
+		LIMIT 50`,
+		pattern, pattern, pattern, pattern, pattern,
 	)
 	if err != nil {
 		return nil, err
@@ -218,7 +378,6 @@ func (s *MessageStore) SearchContacts(query string) ([]ContactRecord, error) {
 		}
 		c.IsGroup = len(c.ID) > 0 && c.ID[len(c.ID)-4:] == "g.us"
 		if !c.IsGroup {
-			// Extract number from JID (user@s.whatsapp.net)
 			for i, ch := range c.ID {
 				if ch == '@' {
 					c.Number = c.ID[:i]
