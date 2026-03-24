@@ -76,8 +76,10 @@ export class WactlOAuthProvider implements OAuthServerProvider {
     res: Response
   ): Promise<void> {
     // Check if this is a form submission (POST with password)
+    // Password is base64-encoded by the consent form to avoid urlencoded mangling
     const body = (res.req as any)?.body;
-    const password = body?.password as string | undefined;
+    const rawPassword = body?.password as string | undefined;
+    const password = rawPassword ? Buffer.from(rawPassword, "base64").toString("utf-8") : undefined;
 
     if (password) {
       // Form submission — validate password

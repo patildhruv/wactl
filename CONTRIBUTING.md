@@ -37,7 +37,7 @@ cd server && npm ci && npm run build && cd ..
 ## Project Structure
 
 - `bridge/` — Go binary (WhatsApp bridge via whatsmeow)
-- `server/` — TypeScript server (MCP, admin panel, CLI, updater)
+- `server/` — TypeScript server (MCP, admin panel, CLI, updater, OAuth)
 - `docker/` — Docker deployment files
 - `scripts/` — Installation and utility scripts
 

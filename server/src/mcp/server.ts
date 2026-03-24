@@ -122,11 +122,14 @@ export class MCPServerWrapper {
   private sseSessions: Map<string, SSESession> = new Map();
   private streamableSessions: Map<string, StreamableSession> = new Map();
 
-  constructor(bridge: BridgeClient, apiKey: string, basePath: string = "", oauthProvider?: WactlOAuthProvider) {
+  private resourceServerUrl?: URL;
+
+  constructor(bridge: BridgeClient, apiKey: string, basePath: string = "", oauthProvider?: WactlOAuthProvider, resourceServerUrl?: URL) {
     this.bridge = bridge;
     this.apiKey = apiKey;
     this.basePath = basePath;
     this.oauthProvider = oauthProvider;
+    this.resourceServerUrl = resourceServerUrl;
   }
 
   /**
@@ -158,8 +161,7 @@ export class MCPServerWrapper {
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (this.oauthProvider) {
       // Include resource_metadata URL to trigger OAuth discovery in Claude web
-      const resourceUrl = new URL(`http://${req.headers.host || "localhost"}/mcp`);
-      const metadataUrl = getOAuthProtectedResourceMetadataUrl(resourceUrl);
+      const metadataUrl = getOAuthProtectedResourceMetadataUrl(this.resourceServerUrl!);
       headers["WWW-Authenticate"] = `Bearer resource_metadata="${metadataUrl}"`;
     }
     res.writeHead(401, headers);
