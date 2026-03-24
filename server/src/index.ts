@@ -10,6 +10,8 @@ import { MCPServerWrapper } from "./mcp/server";
 import { createAdminRouter } from "./admin/routes";
 import { Notifier } from "./notify/ntfy";
 import { AutoUpdater } from "./updater/index";
+import { mcpAuthRouter } from "@modelcontextprotocol/sdk/server/auth/router.js";
+import { WactlOAuthProvider } from "./mcp/oauth";
 
 // Load .env from repo root (one directory above server/)
 dotenv.config({ path: path.resolve(__dirname, "../../.env") });
@@ -23,6 +25,7 @@ const ADMIN_PASSWORD_HASH = process.env.ADMIN_PASSWORD_HASH || "";
 const DATA_DIR = process.env.DATA_DIR || path.resolve(__dirname, "../../data");
 const BRIDGE_DIR = process.env.BRIDGE_DIR || path.resolve(__dirname, "../../bridge");
 const BASE_PATH = process.env.BASE_PATH || ""; // e.g. "/myname" for multi-instance
+const PUBLIC_URL = process.env.PUBLIC_URL || ""; // e.g. "https://wactl.example.com" — enables OAuth
 
 if (!MCP_API_KEY) {
   console.warn("[wactl] WARNING: MCP_API_KEY not set — MCP endpoint will reject all requests");
@@ -36,7 +39,8 @@ fs.mkdirSync(DATA_DIR, { recursive: true });
 
 // Initialize components
 const bridge = new BridgeClient(BRIDGE_PORT);
-const mcpServer = new MCPServerWrapper(bridge, MCP_API_KEY, BASE_PATH);
+const oauthProvider = PUBLIC_URL ? new WactlOAuthProvider(ADMIN_PASSWORD_HASH) : undefined;
+const mcpServer = new MCPServerWrapper(bridge, MCP_API_KEY, BASE_PATH, oauthProvider);
 const notifier = new Notifier({
   method: process.env.NOTIFY_METHOD || "none",
   ntfyTopic: process.env.NTFY_TOPIC,
@@ -62,6 +66,18 @@ mcpApp.use((req, _res, next) => {
   })}`);
   next();
 });
+
+// OAuth 2.1 endpoints — enabled when PUBLIC_URL is set
+if (PUBLIC_URL && oauthProvider) {
+  const issuerUrl = new URL(PUBLIC_URL);
+  const resourceServerUrl = new URL(`${PUBLIC_URL}/mcp`);
+  mcpApp.use(mcpAuthRouter({
+    provider: oauthProvider,
+    issuerUrl,
+    resourceServerUrl,
+  }));
+  console.log(`[wactl] OAuth enabled — issuer: ${PUBLIC_URL}`);
+}
 
 // CORS middleware — needed for browser-based clients (e.g. Perplexity)
 mcpApp.use((_req, res, next) => {

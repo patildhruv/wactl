@@ -7,6 +7,8 @@ import { z } from "zod";
 import { BridgeClient } from "../bridge/client";
 import { validateApiKey } from "./auth";
 import { executeTool } from "./tools";
+import { WactlOAuthProvider } from "./oauth";
+import { getOAuthProtectedResourceMetadataUrl } from "@modelcontextprotocol/sdk/server/auth/router.js";
 
 /**
  * Creates a fresh McpServer with all WhatsApp tools registered.
@@ -116,21 +118,57 @@ export class MCPServerWrapper {
   private bridge: BridgeClient;
   private apiKey: string;
   private basePath: string;
+  private oauthProvider?: WactlOAuthProvider;
   private sseSessions: Map<string, SSESession> = new Map();
   private streamableSessions: Map<string, StreamableSession> = new Map();
 
-  constructor(bridge: BridgeClient, apiKey: string, basePath: string = "") {
+  constructor(bridge: BridgeClient, apiKey: string, basePath: string = "", oauthProvider?: WactlOAuthProvider) {
     this.bridge = bridge;
     this.apiKey = apiKey;
     this.basePath = basePath;
+    this.oauthProvider = oauthProvider;
+  }
+
+  /**
+   * Validates auth via OAuth Bearer token or API key.
+   * Returns true if authorized. On failure, sends 401 with WWW-Authenticate
+   * header (triggers OAuth flow in Claude web).
+   */
+  private async validateAuth(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
+    // Try OAuth Bearer token first
+    if (this.oauthProvider) {
+      const authHeader = req.headers["authorization"];
+      if (typeof authHeader === "string" && authHeader.startsWith("Bearer ")) {
+        const token = authHeader.slice(7);
+        try {
+          await this.oauthProvider.verifyAccessToken(token);
+          return true;
+        } catch {
+          // Token invalid — fall through to API key check
+        }
+      }
+    }
+
+    // Try API key (X-API-Key or Bearer)
+    if (validateApiKey(req, this.apiKey)) {
+      return true;
+    }
+
+    // Both failed — return 401
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (this.oauthProvider) {
+      // Include resource_metadata URL to trigger OAuth discovery in Claude web
+      const resourceUrl = new URL(`http://${req.headers.host || "localhost"}/mcp`);
+      const metadataUrl = getOAuthProtectedResourceMetadataUrl(resourceUrl);
+      headers["WWW-Authenticate"] = `Bearer resource_metadata="${metadataUrl}"`;
+    }
+    res.writeHead(401, headers);
+    res.end(JSON.stringify({ error: "Invalid or missing authentication" }));
+    return false;
   }
 
   async handleSSE(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    if (!validateApiKey(req, this.apiKey)) {
-      res.writeHead(401, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Invalid or missing API key" }));
-      return;
-    }
+    if (!(await this.validateAuth(req, res))) return;
 
     const server = createMcpServer(this.bridge);
     const transport = new SSEServerTransport(`${this.basePath}/mcp/messages`, res);
@@ -164,11 +202,7 @@ export class MCPServerWrapper {
   }
 
   async handleStreamableHTTP(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    if (!validateApiKey(req, this.apiKey)) {
-      res.writeHead(401, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Invalid or missing API key" }));
-      return;
-    }
+    if (!(await this.validateAuth(req, res))) return;
 
     // Check for existing session
     const sessionId = req.headers["mcp-session-id"] as string | undefined;
