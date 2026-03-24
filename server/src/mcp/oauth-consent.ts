@@ -96,9 +96,10 @@ export function getConsentHTML(params: ConsentParams): string {
       ${params.state ? `<input type="hidden" name="state" value="${esc(params.state)}">` : ""}
       ${params.scopes?.length ? `<input type="hidden" name="scope" value="${esc(params.scopes.join(" "))}">` : ""}
       ${params.resource ? `<input type="hidden" name="resource" value="${esc(params.resource)}">` : ""}
+      <input type="hidden" name="password" id="password_hidden" value="">
       <div class="field">
-        <label for="password">Admin password</label>
-        <input type="password" id="password" name="password" required autofocus
+        <label for="password_input">Admin password</label>
+        <input type="password" id="password_input" required autofocus
                placeholder="Enter your wactl admin password">
       </div>
       <div class="buttons">
@@ -106,6 +107,12 @@ export function getConsentHTML(params: ConsentParams): string {
       </div>
     </form>
   </div>
+  <script>
+    document.querySelector('form').addEventListener('submit', function(e) {
+      var pw = document.getElementById('password_input').value;
+      document.getElementById('password_hidden').value = btoa(unescape(encodeURIComponent(pw)));
+    });
+  </script>
 </body>
 </html>`;
 }

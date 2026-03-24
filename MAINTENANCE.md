@@ -424,6 +424,71 @@ sudo systemctl start wactl-<name>-bridge wactl-<name>-server
 
 ---
 
+## OAuth 2.1 (Claude Web Integration)
+
+OAuth is enabled when `PUBLIC_URL` is set in the instance `.env`. It uses the MCP SDK's built-in auth framework — zero extra dependencies.
+
+### How It Works
+
+1. Claude web sends a request to `/mcp` → gets 401 with `WWW-Authenticate` header
+2. Claude discovers OAuth endpoints via `/.well-known/oauth-protected-resource` and `/.well-known/oauth-authorization-server`
+3. Claude registers itself via `/register` (dynamic client registration)
+4. User is redirected to a consent page → enters admin password → clicks Authorize
+5. Claude exchanges the authorization code for an access token (with PKCE)
+6. Subsequent MCP requests use `Authorization: Bearer <token>`
+
+Tokens are stored in memory. A server restart invalidates all tokens — Claude web will silently re-authenticate.
+
+### OAuth + Multi-Instance
+
+The MCP SDK mounts OAuth endpoints (`/authorize`, `/token`, `/register`) at the **host root**. With path-based multi-instance (`/alice/`, `/bob/`), only one instance can claim these paths. This is a limitation of the SDK, not wactl.
+
+| Setup | API Key Auth | OAuth |
+|---|---|---|
+| Single instance | Works | Works |
+| Multi-instance (path-based) | Works | Only one instance |
+| Multi-instance (subdomains) | Works | Works |
+
+**Recommendation:** Use API key auth for multi-instance path-based setups. Use OAuth only for single-instance or subdomain-based deployments.
+
+### Caddy Routes for OAuth
+
+The install script does not yet auto-configure Caddy for OAuth. If you enable `PUBLIC_URL`, add these routes to your Caddyfile **before** the instance-specific routes:
+
+```
+# OAuth 2.1 endpoints
+handle /.well-known/oauth-authorization-server {
+    reverse_proxy localhost:<MCP_PORT>
+}
+handle /.well-known/oauth-protected-resource/* {
+    reverse_proxy localhost:<MCP_PORT>
+}
+handle /authorize {
+    reverse_proxy localhost:<MCP_PORT>
+}
+handle /token {
+    reverse_proxy localhost:<MCP_PORT>
+}
+handle /register {
+    reverse_proxy localhost:<MCP_PORT>
+}
+handle /revoke {
+    reverse_proxy localhost:<MCP_PORT>
+}
+```
+
+### OAuth Troubleshooting
+
+| Problem | Fix |
+|---|---|
+| Claude web shows "connection failed" | Check `PUBLIC_URL` is set. Verify: `curl https://<host>/.well-known/oauth-authorization-server` should return JSON |
+| Consent page doesn't load | Check Caddy routes for `/authorize` → MCP port |
+| "Invalid password" on consent page | Verify your admin password matches the hash: `node -e "console.log(require('bcryptjs').compareSync('yourpassword', 'yourhash'))"` |
+| OAuth works then stops after ~1 hour | Normal — access tokens expire after 1 hour. Claude web should auto-refresh. If not, re-add the MCP server |
+| OAuth works but API key doesn't (or vice versa) | Both should work simultaneously. Check the `Authorization` header format |
+
+---
+
 ## Future-Proofing Notes
 
 1. **Node.js 20 LTS** reaches end-of-life in April 2026. Plan to upgrade to Node.js 22 LTS. Update the install script, Dockerfile, and test.

@@ -40,7 +40,8 @@ fs.mkdirSync(DATA_DIR, { recursive: true });
 // Initialize components
 const bridge = new BridgeClient(BRIDGE_PORT);
 const oauthProvider = PUBLIC_URL ? new WactlOAuthProvider(ADMIN_PASSWORD_HASH) : undefined;
-const mcpServer = new MCPServerWrapper(bridge, MCP_API_KEY, BASE_PATH, oauthProvider);
+const oauthResourceServerUrl = PUBLIC_URL ? new URL(`${PUBLIC_URL}${BASE_PATH}/mcp`) : undefined;
+const mcpServer = new MCPServerWrapper(bridge, MCP_API_KEY, BASE_PATH, oauthProvider, oauthResourceServerUrl);
 const notifier = new Notifier({
   method: process.env.NOTIFY_METHOD || "none",
   ntfyTopic: process.env.NTFY_TOPIC,
@@ -53,6 +54,7 @@ const notifier = new Notifier({
 
 // --- MCP Server ---
 const mcpApp = express();
+mcpApp.set("trust proxy", 1); // Behind Caddy reverse proxy
 
 // Request logging — debug MCP client connections
 mcpApp.use((req, _res, next) => {
@@ -70,7 +72,7 @@ mcpApp.use((req, _res, next) => {
 // OAuth 2.1 endpoints — enabled when PUBLIC_URL is set
 if (PUBLIC_URL && oauthProvider) {
   const issuerUrl = new URL(PUBLIC_URL);
-  const resourceServerUrl = new URL(`${PUBLIC_URL}/mcp`);
+  const resourceServerUrl = new URL(`${PUBLIC_URL}${BASE_PATH}/mcp`);
   mcpApp.use(mcpAuthRouter({
     provider: oauthProvider,
     issuerUrl,
