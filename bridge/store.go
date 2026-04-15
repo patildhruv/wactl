@@ -58,12 +58,170 @@ func NewMessageStore(dataDir string) (*MessageStore, error) {
 			updated_at TIMESTAMP
 		);
 		CREATE INDEX IF NOT EXISTS idx_contacts_name ON contacts(push_name, full_name);
+		CREATE TABLE IF NOT EXISTS schema_migrations (
+			name TEXT PRIMARY KEY,
+			applied_at TIMESTAMP
+		);
 	`); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("create tables: %w", err)
 	}
 
 	return &MessageStore{db: db}, nil
+}
+
+// migrationApplied reports whether a named migration has already run.
+func (s *MessageStore) migrationApplied(name string) (bool, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE name = ?`, name).Scan(&n)
+	return n > 0, err
+}
+
+// markMigrationApplied records that a named migration has run.
+func (s *MessageStore) markMigrationApplied(name string) error {
+	_, err := s.db.Exec(
+		`INSERT OR REPLACE INTO schema_migrations (name, applied_at) VALUES (?, ?)`,
+		name, time.Now(),
+	)
+	return err
+}
+
+// MigrateLIDChats is a one-time backfill that rewrites legacy @lid rows in
+// chats / messages / contacts to their @s.whatsapp.net equivalents, using the
+// resolver's lid→pn snapshot. Idempotent — guarded by schema_migrations.
+//
+// Runs once per messages.db. New mappings that appear later are handled at
+// write time by the resolver in handlers.go, so re-running isn't necessary.
+func (s *MessageStore) MigrateLIDChats(resolver *LIDResolver) error {
+	const migrationName = "lid_backfill_v1"
+	if resolver == nil {
+		return nil
+	}
+	applied, err := s.migrationApplied(migrationName)
+	if err != nil {
+		return fmt.Errorf("check migration: %w", err)
+	}
+	if applied {
+		return nil
+	}
+
+	snapshot := resolver.Snapshot()
+	if len(snapshot) == 0 {
+		// Nothing to migrate; still mark done so we don't retry forever.
+		return s.markMigrationApplied(migrationName)
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Prepared statements — SQLite needs one Exec per mapping row since each
+	// UPDATE targets a specific (lid, pn) pair. The phone-side row may already
+	// exist (pre-migration), so we UPDATE-then-DELETE to handle the collision.
+
+	updateChats, err := tx.Prepare(`UPDATE OR IGNORE chats SET jid = ? WHERE jid = ?`)
+	if err != nil {
+		return err
+	}
+	defer updateChats.Close()
+
+	deleteDupChats, err := tx.Prepare(`DELETE FROM chats WHERE jid = ?`)
+	if err != nil {
+		return err
+	}
+	defer deleteDupChats.Close()
+
+	updateMessagesChat, err := tx.Prepare(`UPDATE OR IGNORE messages SET chat_jid = ? WHERE chat_jid = ?`)
+	if err != nil {
+		return err
+	}
+	defer updateMessagesChat.Close()
+
+	// Clean up messages whose (id, chat_jid) clashed with an existing phone row.
+	deleteDupMessages, err := tx.Prepare(`DELETE FROM messages WHERE chat_jid = ?`)
+	if err != nil {
+		return err
+	}
+	defer deleteDupMessages.Close()
+
+	updateMessageSender, err := tx.Prepare(`UPDATE messages SET sender = ? WHERE sender = ?`)
+	if err != nil {
+		return err
+	}
+	defer updateMessageSender.Close()
+
+	updateContacts, err := tx.Prepare(`UPDATE OR IGNORE contacts SET jid = ? WHERE jid = ?`)
+	if err != nil {
+		return err
+	}
+	defer updateContacts.Close()
+
+	deleteDupContacts, err := tx.Prepare(`DELETE FROM contacts WHERE jid = ?`)
+	if err != nil {
+		return err
+	}
+	defer deleteDupContacts.Close()
+
+	chatCount := 0
+	msgCount := 0
+	for lid, pn := range snapshot {
+		lidChatJID := lid + "@lid"
+		pnChatJID := pn + "@s.whatsapp.net"
+
+		// chats: rewrite; if phone row already exists UPDATE OR IGNORE leaves
+		// the lid row intact, so we drop it explicitly.
+		res, err := updateChats.Exec(pnChatJID, lidChatJID)
+		if err != nil {
+			return fmt.Errorf("update chats: %w", err)
+		}
+		n, _ := res.RowsAffected()
+		chatCount += int(n)
+		if _, err := deleteDupChats.Exec(lidChatJID); err != nil {
+			return fmt.Errorf("delete dup chats: %w", err)
+		}
+
+		// messages: same pattern on chat_jid (primary key is (id, chat_jid)).
+		res, err = updateMessagesChat.Exec(pnChatJID, lidChatJID)
+		if err != nil {
+			return fmt.Errorf("update messages.chat_jid: %w", err)
+		}
+		n, _ = res.RowsAffected()
+		msgCount += int(n)
+		if _, err := deleteDupMessages.Exec(lidChatJID); err != nil {
+			return fmt.Errorf("delete dup messages: %w", err)
+		}
+
+		// messages.sender: stored bare (user-part only). No unique constraint,
+		// plain UPDATE is safe.
+		if _, err := updateMessageSender.Exec(pn, lid); err != nil {
+			return fmt.Errorf("update messages.sender: %w", err)
+		}
+
+		// contacts: same PK collision handling.
+		if _, err := updateContacts.Exec(pnChatJID, lidChatJID); err != nil {
+			return fmt.Errorf("update contacts: %w", err)
+		}
+		if _, err := deleteDupContacts.Exec(lidChatJID); err != nil {
+			return fmt.Errorf("delete dup contacts: %w", err)
+		}
+	}
+
+	if _, err := tx.Exec(
+		`INSERT OR REPLACE INTO schema_migrations (name, applied_at) VALUES (?, ?)`,
+		migrationName, time.Now(),
+	); err != nil {
+		return fmt.Errorf("mark migration: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit migration: %w", err)
+	}
+
+	fmt.Printf("[LID migration] rewrote %d chats, %d messages across %d lid↔pn pairs\n",
+		chatCount, msgCount, len(snapshot))
+	return nil
 }
 
 // Close releases the database connection.
