@@ -12,6 +12,34 @@ INSTANCES_JSON="$INSTALL_DIR/instances.json"
 LOG_PREFIX="[wactl-update $(date -Iseconds)]"
 export PATH="$PATH:/usr/local/go/bin"
 
+# Keywords that flag a whatsmeow update as "read this now" vs a routine bump.
+# Same list as upstream-watch.sh — keep in sync if you edit one.
+UPDATE_KEYWORD_RE='lid|identity|protocol|breaking|ratchet|session|pair|auth|migrate|migration|token|prekey|handshake|multi-device|multidevice|companion|pn-|s\.whatsapp\.net|deprecat|remove|replace'
+
+# pseudo_version_sha <v0.0.0-YYYYMMDD-abc123def456> → abc123def456
+# whatsmeow is versioned via Go pseudo-versions; the trailing 12-char field is
+# the commit prefix. Empty when the string doesn't match (e.g., a real tag).
+pseudo_version_sha() {
+  echo "$1" | grep -oE '[0-9a-f]{12}$' || true
+}
+
+# whatsmeow_changelog <old_sha> <new_sha> — prints "sha  title" lines for every
+# commit between the two SHAs, newest first. Silent on network failure.
+whatsmeow_changelog() {
+  local old="$1" new="$2"
+  [ -n "$old" ] && [ -n "$new" ] || return 0
+  local auth=()
+  if [ -n "${GITHUB_TOKEN:-}" ]; then
+    auth=(-H "Authorization: Bearer $GITHUB_TOKEN")
+  fi
+  curl -sSL --max-time 15 \
+    -H "Accept: application/vnd.github+json" \
+    -H "User-Agent: wactl-update-check" \
+    "${auth[@]}" \
+    "https://api.github.com/repos/tulir/whatsmeow/compare/$old...$new" \
+    | jq -r '.commits // [] | reverse | .[] | "\(.sha[0:7])  \(.commit.message | split("\n")[0])"' 2>/dev/null || true
+}
+
 echo "$LOG_PREFIX Starting update check..."
 
 # Ensure instances.json exists
@@ -105,6 +133,29 @@ if echo "$TEST_RESULT" | grep -q '"connected"'; then
 
   echo "$LOG_PREFIX Updated all instances to $LATEST"
 
+  # Build the ntfy body with a commit-title digest so the notification is
+  # actually informative — otherwise users ignore the daily ping and miss the
+  # one update that required attention. We bump priority to high when any
+  # commit title matches UPDATE_KEYWORD_RE.
+  OLD_SHA=$(pseudo_version_sha "$CURRENT")
+  NEW_SHA=$(pseudo_version_sha "$LATEST")
+  CHANGELOG=$(whatsmeow_changelog "$OLD_SHA" "$NEW_SHA" | head -15)
+  NTFY_PRIORITY="default"
+  NTFY_TITLE="wactl — Updated"
+  if [ -n "$CHANGELOG" ] && echo "$CHANGELOG" | grep -qiE "$UPDATE_KEYWORD_RE"; then
+    NTFY_PRIORITY="high"
+    NTFY_TITLE="wactl — Updated (protocol-relevant changes, review)"
+  fi
+  if [ -n "$CHANGELOG" ]; then
+    NTFY_BODY="whatsmeow $CURRENT → $LATEST, bridge restarted.
+
+$CHANGELOG
+
+https://github.com/tulir/whatsmeow/compare/$OLD_SHA...$NEW_SHA"
+  else
+    NTFY_BODY="whatsmeow updated to $LATEST. Bridge restarted."
+  fi
+
   # Notify all instances with ntfy configured about the successful update
   jq -r '.instances | to_entries[] | .key' "$INSTANCES_JSON" | while read -r INST; do
     INST_ENV="$INSTALL_DIR/instances/$INST/.env"
@@ -113,8 +164,8 @@ if echo "$TEST_RESULT" | grep -q '"connected"'; then
       NTFY_SRV=$(grep '^NTFY_SERVER=' "$INST_ENV" 2>/dev/null | cut -d= -f2-)
       NTFY_SRV="${NTFY_SRV:-https://ntfy.sh}"
       if [ -n "$NTFY" ]; then
-        curl -s -d "whatsmeow updated to $LATEST. Bridge restarted." \
-          -H "Title: wactl — Updated" -H "Priority: default" \
+        curl -s -d "$NTFY_BODY" \
+          -H "Title: $NTFY_TITLE" -H "Priority: $NTFY_PRIORITY" \
           "$NTFY_SRV/$NTFY" > /dev/null 2>&1 || true
       fi
     fi
