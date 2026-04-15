@@ -63,6 +63,27 @@ func main() {
 	}
 	defer msgStore.Close()
 
+	// LID resolver — opens session.db read-only to expose whatsmeow's lid↔pn map.
+	// Used to normalize incoming @lid JIDs to @s.whatsapp.net so search/get_chat
+	// stays consistent with the pre-LID-migration world.
+	resolverCtx, resolverCancel := context.WithCancel(context.Background())
+	defer resolverCancel()
+	resolverLog := waLog.Stdout("LIDResolver", "INFO", true)
+	resolver, err := NewLIDResolver(fmt.Sprintf("%s/session.db", dataDir), resolverLog)
+	if err != nil {
+		logger.Warnf("LIDResolver unavailable (LID normalization disabled): %v", err)
+		resolver = nil
+	} else {
+		defer resolver.Close()
+		if err := resolver.Refresh(resolverCtx); err != nil {
+			logger.Warnf("LIDResolver initial refresh failed: %v", err)
+		}
+		if err := msgStore.MigrateLIDChats(resolver); err != nil {
+			logger.Warnf("LID backfill migration failed: %v", err)
+		}
+		go resolver.StartAutoRefresh(resolverCtx, 5*time.Minute)
+	}
+
 	// Build bridge state
 	bridge := &BridgeState{
 		Client:      client,
@@ -70,6 +91,7 @@ func main() {
 		Logger:      logger,
 		CallbackURL: callbackURL,
 		StartTime:   time.Now(),
+		Resolver:    resolver,
 	}
 
 	// Register event handlers
