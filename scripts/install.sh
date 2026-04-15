@@ -582,6 +582,9 @@ systemctl reload caddy 2>/dev/null || systemctl restart caddy 2>/dev/null || tru
 # Setup auto-updater cron (first run only — shared across all instances)
 if [ "$FIRST_RUN" = true ]; then
   echo "0 3 * * * root /opt/wactl/scripts/update-check.sh >> /var/log/wactl-update.log 2>&1" > /etc/cron.d/wactl-update
+  # Upstream watcher — heads-up ntfy when whatsmeow / mautrix-whatsapp ship
+  # protocol-relevant changes. Offset from update cron so they don't overlap.
+  echo "0 7 * * * root /opt/wactl/scripts/upstream-watch.sh >> /var/log/wactl-upstream.log 2>&1" > /etc/cron.d/wactl-upstream-watch
 fi
 
 # Firewall: open 80/443 for Caddy, close direct instance ports
