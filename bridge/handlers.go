@@ -35,6 +35,10 @@ type BridgeState struct {
 	Connected bool
 	LoggedIn  bool
 	Account   string // phone number / push name
+
+	// Resolver maps @lid ↔ @s.whatsapp.net JIDs using whatsmeow's lid_map table.
+	// Nil when session.db has not yet been opened (e.g., first-run QR pairing).
+	Resolver *LIDResolver
 }
 
 // RegisterEventHandlers wires up all whatsmeow event handlers.
@@ -148,16 +152,19 @@ func (b *BridgeState) handleStreamReplaced() {
 }
 
 func (b *BridgeState) handleMessage(msg *events.Message) {
-	chatJID := msg.Info.Chat.String()
-	sender := msg.Info.Sender.User
+	// Normalize @lid → @s.whatsapp.net so 1:1 history unifies under phone JIDs.
+	chatJID := b.Resolver.Normalize(msg.Info.Chat)
+	senderJID := b.Resolver.Normalize(msg.Info.Sender)
+	chatJIDStr := chatJID.String()
+	sender := senderJID.User
 
 	// Capture sender's push name
 	if msg.Info.PushName != "" && !msg.Info.IsFromMe {
-		_ = b.Store.UpsertContact(msg.Info.Sender.String(), msg.Info.PushName, "")
+		_ = b.Store.UpsertContact(senderJID.String(), msg.Info.PushName, "")
 	}
 
-	name := resolveChatName(b.Client, b.Store, msg.Info.Chat, chatJID, nil, sender, b.Logger)
-	_ = b.Store.UpsertChat(chatJID, name, msg.Info.Timestamp)
+	name := resolveChatName(b.Client, b.Store, chatJID, chatJIDStr, nil, sender, b.Logger)
+	_ = b.Store.UpsertChat(chatJIDStr, name, msg.Info.Timestamp)
 
 	content := extractText(msg.Message)
 	mediaType, filename, url, mediaKey, fileSHA256, fileEncSHA256, fileLength := extractMediaInfo(msg.Message)
@@ -167,7 +174,7 @@ func (b *BridgeState) handleMessage(msg *events.Message) {
 	}
 
 	if err := b.Store.StoreMessage(
-		msg.Info.ID, chatJID, sender, content, msg.Info.Timestamp, msg.Info.IsFromMe,
+		msg.Info.ID, chatJIDStr, sender, content, msg.Info.Timestamp, msg.Info.IsFromMe,
 		mediaType, filename, url, mediaKey, fileSHA256, fileEncSHA256, fileLength,
 	); err != nil {
 		b.Logger.Warnf("Store message error: %v", err)
@@ -184,7 +191,7 @@ func (b *BridgeState) handleMessage(msg *events.Message) {
 	}
 
 	b.notifyCallback("message", map[string]interface{}{
-		"chatJID":   chatJID,
+		"chatJID":   chatJIDStr,
 		"sender":    sender,
 		"content":   content,
 		"timestamp": msg.Info.Timestamp.Unix(),
@@ -199,11 +206,13 @@ func (b *BridgeState) handleHistorySync(evt *events.HistorySync) {
 		if conv.ID == nil {
 			continue
 		}
-		chatJID := *conv.ID
-		jid, err := types.ParseJID(chatJID)
+		jid, err := types.ParseJID(*conv.ID)
 		if err != nil {
 			continue
 		}
+		// Normalize @lid chats so history merges with the phone-JID conversation.
+		jid = b.Resolver.Normalize(jid)
+		chatJID := jid.String()
 
 		name := resolveChatName(b.Client, b.Store, jid, chatJID, conv, "", b.Logger)
 
@@ -242,6 +251,7 @@ func (b *BridgeState) handleHistorySync(evt *events.HistorySync) {
 			} else {
 				sender = jid.User
 			}
+			sender = b.Resolver.NormalizeUser(sender)
 
 			ts := time.Time{}
 			if t := msg.Message.GetMessageTimestamp(); t != 0 {
@@ -339,6 +349,8 @@ func extractMediaInfo(msg *waProto.Message) (mediaType, filename, url string, me
 }
 
 // SyncContacts reads all contacts from whatsmeow's local store and persists them.
+// JIDs are normalized to @s.whatsapp.net via the LID resolver so rows line up
+// with the (normalized) chat/message storage keys.
 func (b *BridgeState) SyncContacts() {
 	contacts, err := b.Client.Store.Contacts.GetAllContacts(context.Background())
 	if err != nil {
@@ -350,8 +362,9 @@ func (b *BridgeState) SyncContacts() {
 		if contact.FullName == "" && contact.PushName == "" {
 			continue
 		}
+		normalized := b.Resolver.Normalize(jid)
 		entries = append(entries, ContactEntry{
-			JID:      jid.String(),
+			JID:      normalized.String(),
 			PushName: contact.PushName,
 			FullName: contact.FullName,
 		})
