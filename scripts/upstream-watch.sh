@@ -47,6 +47,7 @@ notify() {
   local title="$1"
   local priority="$2"
   local body="$3"
+  local tags="${4:-warning,mag}"
 
   jq -r '.instances | to_entries[] | .key' "$INSTANCES_JSON" | while read -r INST; do
     local env_file="$INSTALL_DIR/instances/$INST/.env"
@@ -59,7 +60,7 @@ notify() {
     curl -s --max-time 10 \
       -H "Title: $title" \
       -H "Priority: $priority" \
-      -H "Tags: telescope" \
+      -H "Tags: $tags" \
       -d "$body" \
       "$server/$topic" > /dev/null 2>&1 || true
   done
@@ -119,10 +120,12 @@ else
       echo "$LOG_PREFIX whatsmeow: $TOTAL new commits"
 
       if [ -n "$INTERESTING" ]; then
-        BODY="$(echo "$INTERESTING" | head -10)
+        BODY="ACTION: review commits, watch for silent breakage (check get_chat on active 1:1s).
+
+$(echo "$INTERESTING" | head -10)
 
 $TOTAL commits since last check. Review: https://github.com/$WHATSMEOW_REPO/commits"
-        notify "wactl — whatsmeow: protocol-relevant commits" "high" "$BODY"
+        notify "🚨 wactl — whatsmeow: protocol-relevant commits" "high" "$BODY" "rotating_light,mag"
         echo "$LOG_PREFIX Alerted on $(echo "$INTERESTING" | wc -l) keyword-matching commits."
       fi
     fi
@@ -155,12 +158,14 @@ else
     INTERESTING=$(echo "$BODY_RAW" | grep -iE "$KEYWORD_RE" | head -10 || true)
 
     if [ -n "$INTERESTING" ]; then
-      BODY="New $MAUTRIX_REPO release: $LATEST_TAG (was $MAUTRIX_LAST_RELEASE)
+      BODY="ACTION: read changelog — mautrix often reacts to protocol shifts a day or two before whatsmeow.
+
+New $MAUTRIX_REPO release: $LATEST_TAG (was $MAUTRIX_LAST_RELEASE)
 
 $INTERESTING
 
 Full notes: https://github.com/$MAUTRIX_REPO/releases/tag/$LATEST_TAG"
-      notify "wactl — mautrix-whatsapp: $LATEST_TAG has protocol notes" "high" "$BODY"
+      notify "📣 wactl — mautrix-whatsapp: $LATEST_TAG has protocol notes" "high" "$BODY" "loudspeaker,whatsapp"
       echo "$LOG_PREFIX Alerted on mautrix release $LATEST_TAG."
     else
       echo "$LOG_PREFIX mautrix $LATEST_TAG: no keyword matches in changelog, silent update."
