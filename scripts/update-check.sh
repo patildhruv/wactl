@@ -83,8 +83,11 @@ if ! CGO_ENABLED=1 go build -o wactl-bridge-new . 2>&1; then
       NTFY_SRV=$(grep '^NTFY_SERVER=' "$INST_ENV" 2>/dev/null | cut -d= -f2-)
       NTFY_SRV="${NTFY_SRV:-https://ntfy.sh}"
       if [ -n "$NTFY" ]; then
-        curl -s -d "Auto-update build to $LATEST failed. Manual review needed." \
-          -H "Title: wactl — Auto-update Failed" -H "Priority: urgent" \
+        curl -s -d "ACTION: SSH in and rebuild the bridge manually — auto-update couldn't compile the new whatsmeow.
+
+Auto-update build to $LATEST failed. Manual review needed." \
+          -H "Title: ❌ wactl — Auto-update Failed (build)" -H "Priority: urgent" \
+          -H "Tags: x,hammer_and_wrench" \
           "$NTFY_SRV/$NTFY" > /dev/null 2>&1 || true
       fi
     fi
@@ -140,20 +143,30 @@ if echo "$TEST_RESULT" | grep -q '"connected"'; then
   OLD_SHA=$(pseudo_version_sha "$CURRENT")
   NEW_SHA=$(pseudo_version_sha "$LATEST")
   CHANGELOG=$(whatsmeow_changelog "$OLD_SHA" "$NEW_SHA" | head -15)
+  # Emoji prefix + ntfy tag encode the urgency at-a-glance on the phone:
+  # 📦 = routine dep bump, nothing to do; 🚨 = protocol-adjacent, read it.
   NTFY_PRIORITY="default"
-  NTFY_TITLE="wactl — Updated"
+  NTFY_TITLE="📦 wactl — Updated (routine)"
+  NTFY_TAGS="package"
+  NTFY_ACTION="ACTION: none — routine bump. Listed for transparency."
   if [ -n "$CHANGELOG" ] && echo "$CHANGELOG" | grep -qiE "$UPDATE_KEYWORD_RE"; then
     NTFY_PRIORITY="high"
-    NTFY_TITLE="wactl — Updated (protocol-relevant changes, review)"
+    NTFY_TITLE="🚨 wactl — Updated (REVIEW, protocol-relevant changes)"
+    NTFY_TAGS="rotating_light,package"
+    NTFY_ACTION="ACTION: read commits + spot-check 1:1 chats. If something silently broke we want to know before history drifts."
   fi
   if [ -n "$CHANGELOG" ]; then
-    NTFY_BODY="whatsmeow $CURRENT → $LATEST, bridge restarted.
+    NTFY_BODY="$NTFY_ACTION
+
+whatsmeow $CURRENT → $LATEST, bridge restarted.
 
 $CHANGELOG
 
 https://github.com/tulir/whatsmeow/compare/$OLD_SHA...$NEW_SHA"
   else
-    NTFY_BODY="whatsmeow updated to $LATEST. Bridge restarted."
+    NTFY_BODY="$NTFY_ACTION
+
+whatsmeow updated to $LATEST. Bridge restarted."
   fi
 
   # Notify all instances with ntfy configured about the successful update
@@ -166,6 +179,7 @@ https://github.com/tulir/whatsmeow/compare/$OLD_SHA...$NEW_SHA"
       if [ -n "$NTFY" ]; then
         curl -s -d "$NTFY_BODY" \
           -H "Title: $NTFY_TITLE" -H "Priority: $NTFY_PRIORITY" \
+          -H "Tags: $NTFY_TAGS" \
           "$NTFY_SRV/$NTFY" > /dev/null 2>&1 || true
       fi
     fi
@@ -184,8 +198,11 @@ else
       NTFY_SRV=$(grep '^NTFY_SERVER=' "$INST_ENV" 2>/dev/null | cut -d= -f2-)
       NTFY_SRV="${NTFY_SRV:-https://ntfy.sh}"
       if [ -n "$NTFY" ]; then
-        curl -s -d "Auto-update to $LATEST failed self-test. Rolled back to $CURRENT." \
-          -H "Title: wactl — Auto-update Failed" -H "Priority: urgent" \
+        curl -s -d "ACTION: no immediate action — rollback already applied. Investigate when you have time.
+
+Auto-update to $LATEST failed self-test. Rolled back to $CURRENT." \
+          -H "Title: ❌ wactl — Auto-update Self-Test Failed (rolled back)" -H "Priority: urgent" \
+          -H "Tags: x,leftwards_arrow_with_hook" \
           "$NTFY_SRV/$NTFY" > /dev/null 2>&1 || true
       fi
     fi
