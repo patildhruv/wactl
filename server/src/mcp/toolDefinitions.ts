@@ -23,6 +23,18 @@ const JID_GLOSSARY = `JID glossary:
   @newsletter     = channel
   @broadcast      = status updates`;
 
+// Companion tools (resolve_jid, list_group_participants, search_messages,
+// get_message) are surfaced by every wactl server, but some MCP clients
+// (notably Claude.ai) list tools by name without loading their schemas.
+// When a referenced tool isn't immediately callable in your client, use the
+// client's tool-discovery mechanism (e.g. `tool_search` on Claude.ai) before
+// calling it.
+const DISCOVERY_NOTE =
+  "Note on referenced tools: if resolve_jid / list_group_participants / " +
+  "search_messages / get_message appear by name in your tool list but aren't " +
+  "directly callable, your MCP client is loading schemas lazily — surface them " +
+  "via its tool-discovery mechanism (e.g. `tool_search` on Claude.ai) first.";
+
 const RETURN_SHAPE_NOTE =
   "Timestamps are Unix epoch seconds (UTC). `from` is the bare user-part; " +
   "`fromJid` gives you the full JID (so you can tell phone vs lid); " +
@@ -79,7 +91,9 @@ Returns: [{ id, body, timestamp, isFromMe, hasMedia, mediaType?, quotedMessageId
 
 ${RETURN_SHAPE_NOTE}
 
-Note: in group chats, \`fromJid\` is usually an @lid. Use \`fromPhone\` (when present) or \`resolve_jid\` to map to a phone number. Two messages with different user-parts do NOT imply two different people — the same person can appear under both a phone and a LID.`,
+Note: in group chats, \`fromJid\` is usually an @lid. Use \`fromPhone\` (when present) or \`resolve_jid\` to map to a phone number. Two messages with different user-parts do NOT imply two different people — the same person can appear under both a phone and a LID.
+
+${DISCOVERY_NOTE}`,
     schema: {
       chatId: z
         .string()
@@ -118,7 +132,9 @@ Returns: [{ id (JID), name, number (bare phone), isGroup }]
 Note: this tool searches SAVED contacts only. It does NOT search:
   • Group-only participants who aren't in your address book — use \`list_group_participants\` on a group JID for that.
   • People mentioned in messages but not saved — use \`search_messages\` to find them by what they've said.
-If you get an empty result, consider searching messages next.`,
+If you get an empty result, consider searching messages next.
+
+${DISCOVERY_NOTE}`,
     schema: {
       query: z
         .string()
@@ -195,7 +211,9 @@ Returns: [MessageRecord] — same enriched shape as get_chat, with \`chatJid\` i
 
 ${RETURN_SHAPE_NOTE}
 
-Use this instead of pulling hundreds of messages from get_chat when looking for specific content. Combine with resolve_jid to follow up on an @lid you found.`,
+Use this instead of pulling hundreds of messages from get_chat when looking for specific content. Combine with resolve_jid to follow up on an @lid you found.
+
+${DISCOVERY_NOTE}`,
     schema: {
       query: z
         .string()
