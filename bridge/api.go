@@ -33,10 +33,14 @@ func (b *BridgeState) StartAPI(port int) *http.Server {
 	mux.HandleFunc("/send", b.handleSend)
 	mux.HandleFunc("/send-file", b.handleSendFile)
 	mux.HandleFunc("/logout", b.handleLogout)
+	mux.HandleFunc("/messages/search", b.handleSearchMessages)
 
 	// Pattern-based routes
 	mux.HandleFunc("/chats/", b.handleChatMessages)
 	mux.HandleFunc("/media/", b.handleMedia)
+	mux.HandleFunc("/messages/", b.handleMessageByID)
+	mux.HandleFunc("/jid/", b.handleResolveJID)
+	mux.HandleFunc("/groups/", b.handleGroupParticipants)
 
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
 	b.Logger.Infof("Bridge API listening on %s", addr)
@@ -166,7 +170,7 @@ func (b *BridgeState) handleChatMessages(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	msgs, err := b.Store.GetMessages(chatID, limit, before)
+	msgs, err := b.Store.GetMessages(chatID, limit, before, b.Resolver)
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -387,6 +391,164 @@ func (b *BridgeState) handleMedia(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", safeFilename))
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Write(data)
+}
+
+// GET /jid/:jid/resolve → enriched sender metadata for a JID.
+// Accepts a full JID (ending in @lid, @s.whatsapp.net, etc.) OR a bare user-part
+// (assumed @s.whatsapp.net by default, with @lid attempted if no phone mapping found).
+func (b *BridgeState) handleResolveJID(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		jsonErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	// Path: /jid/<jid>/resolve  OR  /jid/<jid>
+	path := strings.TrimPrefix(r.URL.Path, "/jid/")
+	path = strings.TrimSuffix(path, "/resolve")
+	path = strings.TrimSuffix(path, "/")
+	if path == "" {
+		jsonErr(w, http.StatusBadRequest, "jid is required")
+		return
+	}
+	// URL-decoded by net/http already.
+	input := path
+	userPart := input
+	if idx := strings.Index(input, "@"); idx >= 0 {
+		userPart = input[:idx]
+	}
+	meta := buildSenderMeta(userPart, b.Resolver, b.Store)
+	// If caller passed a full JID with a different server than we'd infer, keep theirs.
+	if idx := strings.Index(input, "@"); idx >= 0 {
+		meta.JID = input
+		server := input[idx+1:]
+		if server == "lid" {
+			meta.Type = "lid"
+		} else if server == "s.whatsapp.net" {
+			meta.Type = "phone"
+		}
+	}
+	jsonResp(w, http.StatusOK, meta)
+}
+
+// GET /groups/:jid/participants → list group members with enriched sender metadata.
+func (b *BridgeState) handleGroupParticipants(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		jsonErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	// Path: /groups/<jid>/participants
+	path := strings.TrimPrefix(r.URL.Path, "/groups/")
+	parts := strings.SplitN(path, "/", 2)
+	if len(parts) < 2 || parts[1] != "participants" {
+		jsonErr(w, http.StatusBadRequest, "expected /groups/:jid/participants")
+		return
+	}
+	groupJIDStr := parts[0]
+	groupJID, err := types.ParseJID(groupJIDStr)
+	if err != nil {
+		jsonErr(w, http.StatusBadRequest, "invalid group JID: "+err.Error())
+		return
+	}
+	if groupJID.Server != "g.us" {
+		jsonErr(w, http.StatusBadRequest, "JID is not a group (must end in @g.us)")
+		return
+	}
+	if !b.Client.IsConnected() {
+		jsonErr(w, http.StatusServiceUnavailable, "not connected to WhatsApp")
+		return
+	}
+	info, err := b.Client.GetGroupInfo(context.Background(), groupJID)
+	if err != nil {
+		jsonErr(w, http.StatusInternalServerError, "GetGroupInfo: "+err.Error())
+		return
+	}
+
+	type participantRow struct {
+		SenderMeta
+		IsAdmin      bool `json:"isAdmin"`
+		IsSuperAdmin bool `json:"isSuperAdmin"`
+	}
+	out := make([]participantRow, 0, len(info.Participants))
+	for _, p := range info.Participants {
+		// Prefer the phone JID when whatsmeow has mapped one; otherwise use the raw JID.
+		userPart := p.JID.User
+		if p.PhoneNumber.User != "" {
+			userPart = p.PhoneNumber.User
+		}
+		meta := buildSenderMeta(userPart, b.Resolver, b.Store)
+		// If whatsmeow surfaced the raw LID-form JID, make sure we report both.
+		if p.JID.Server == "lid" && meta.Type == "phone" {
+			// The resolver didn't know about this LID; report the raw JID verbatim.
+			meta.JID = p.JID.String()
+			meta.Type = "lid"
+			meta.User = p.JID.User
+		}
+		out = append(out, participantRow{
+			SenderMeta:   meta,
+			IsAdmin:      p.IsAdmin,
+			IsSuperAdmin: p.IsSuperAdmin,
+		})
+	}
+	jsonResp(w, http.StatusOK, out)
+}
+
+// GET /messages/search?q=...&chat=...&from=...&since=...&until=...&limit=...
+func (b *BridgeState) handleSearchMessages(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		jsonErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	q := r.URL.Query()
+	opts := SearchMessagesOpts{
+		Query:   q.Get("q"),
+		ChatJID: q.Get("chat"),
+		Sender:  q.Get("from"),
+	}
+	if s := q.Get("since"); s != "" {
+		if n, err := strconv.ParseInt(s, 10, 64); err == nil {
+			opts.Since = n
+		}
+	}
+	if u := q.Get("until"); u != "" {
+		if n, err := strconv.ParseInt(u, 10, 64); err == nil {
+			opts.Until = n
+		}
+	}
+	if l := q.Get("limit"); l != "" {
+		if n, err := strconv.Atoi(l); err == nil {
+			opts.Limit = n
+		}
+	}
+	msgs, err := b.Store.SearchMessages(opts, b.Resolver)
+	if err != nil {
+		jsonErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if msgs == nil {
+		msgs = []MessageRecord{}
+	}
+	jsonResp(w, http.StatusOK, msgs)
+}
+
+// GET /messages/:id — fetch a single message by ID.
+// Note: the /messages/search route is registered first so its exact match wins;
+// this handler is only reached for other subpaths.
+func (b *BridgeState) handleMessageByID(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		jsonErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	id := strings.TrimPrefix(r.URL.Path, "/messages/")
+	id = strings.TrimSuffix(id, "/")
+	if id == "" || id == "search" {
+		jsonErr(w, http.StatusBadRequest, "message ID is required")
+		return
+	}
+	msg, err := b.Store.GetMessageByID(id, b.Resolver)
+	if err != nil {
+		jsonErr(w, http.StatusNotFound, "message not found")
+		return
+	}
+	jsonResp(w, http.StatusOK, msg)
 }
 
 // POST /logout
