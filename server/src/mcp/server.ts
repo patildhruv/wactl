@@ -3,10 +3,9 @@ import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { IncomingMessage, ServerResponse } from "http";
 import { randomUUID } from "crypto";
-import { z } from "zod";
 import { BridgeClient } from "../bridge/client";
 import { validateApiKey } from "./auth";
-import { executeTool } from "./tools";
+import { TOOLS } from "./toolDefinitions";
 import { WactlOAuthProvider } from "./oauth";
 import { getOAuthProtectedResourceMetadataUrl } from "@modelcontextprotocol/sdk/server/auth/router.js";
 
@@ -14,6 +13,10 @@ import { getOAuthProtectedResourceMetadataUrl } from "@modelcontextprotocol/sdk/
  * Creates a fresh McpServer with all WhatsApp tools registered.
  * Must be called once per transport connection — the SDK requires
  * a separate McpServer instance per transport.
+ *
+ * Tool metadata (name, description, schema, handler) lives in toolDefinitions.ts.
+ * This function just wires each TOOL into the SDK and wraps the handler result
+ * in the MCP content envelope.
  */
 function createMcpServer(bridge: BridgeClient): McpServer {
   const server = new McpServer({
@@ -21,85 +24,16 @@ function createMcpServer(bridge: BridgeClient): McpServer {
     version: "0.1.0",
   });
 
-  server.tool(
-    "list_chats",
-    "List all WhatsApp conversations with last message preview",
-    { limit: z.number().optional().describe("Maximum number of chats to return") },
-    async (args) => {
-      const result = await executeTool(bridge, "list_chats", args);
-      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
-    }
-  );
-
-  server.tool(
-    "get_chat",
-    "Get message history for a specific chat",
-    {
-      chatId: z.string().describe("The chat JID"),
-      limit: z.number().optional().describe("Maximum number of messages"),
-    },
-    async (args) => {
-      const result = await executeTool(bridge, "get_chat", args);
-      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
-    }
-  );
-
-  server.tool(
-    "search_contacts",
-    "Search contacts by name or phone number",
-    { query: z.string().describe("Search term") },
-    async (args) => {
-      const result = await executeTool(bridge, "search_contacts", args);
-      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
-    }
-  );
-
-  server.tool(
-    "send_message",
-    "Send a text message to a WhatsApp contact or group",
-    {
-      to: z.string().describe("Recipient JID or phone number"),
-      body: z.string().describe("Message text"),
-    },
-    async (args) => {
-      const result = await executeTool(bridge, "send_message", args);
-      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
-    }
-  );
-
-  server.tool(
-    "send_file",
-    "Send a file or image to a WhatsApp contact or group",
-    {
-      to: z.string().describe("Recipient JID or phone number"),
-      filePath: z.string().describe("Absolute path to the file"),
-      caption: z.string().optional().describe("Optional caption"),
-    },
-    async (args) => {
-      const result = await executeTool(bridge, "send_file", args);
-      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
-    }
-  );
-
-  server.tool(
-    "download_media",
-    "Download media from a message",
-    { messageId: z.string().describe("The message ID") },
-    async (args) => {
-      const result = await executeTool(bridge, "download_media", args);
-      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
-    }
-  );
-
-  server.tool(
-    "get_connection_status",
-    "Check WhatsApp bridge connection status",
-    {},
-    async (args) => {
-      const result = await executeTool(bridge, "get_connection_status", args);
-      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
-    }
-  );
+  for (const def of TOOLS) {
+    server.tool(def.name, def.description, def.schema, async (args: any) => {
+      const result = await def.handler(bridge, args);
+      return {
+        content: [
+          { type: "text" as const, text: JSON.stringify(result, null, 2) },
+        ],
+      };
+    });
+  }
 
   return server;
 }
