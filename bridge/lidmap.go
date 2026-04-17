@@ -153,6 +153,32 @@ func (r *LIDResolver) Snapshot() map[string]string {
 	return out
 }
 
+// Classify inspects a bare user-part and returns what kind of identity it is
+// plus the resolved phone and LID user-parts when a mapping is known.
+//
+//   - If the user-part is an LID we've seen, jidType="lid", phone=<resolved>, lid=userPart.
+//   - If the user-part is a phone with a known LID counterpart, jidType="phone",
+//     phone=userPart, lid=<counterpart>.
+//   - Otherwise, jidType="phone" (best guess; most user-parts without a mapping
+//     are just phones the bridge hasn't seen LIDs for yet), phone=userPart, lid="".
+//
+// Callers use this to enrich MessageRecord.from with a typed JID + resolved phone.
+func (r *LIDResolver) Classify(userPart string) (jidType, phone, lid string) {
+	if userPart == "" {
+		return "phone", "", ""
+	}
+	if r == nil {
+		return "phone", userPart, ""
+	}
+	if p, ok := r.PhoneForLID(userPart); ok {
+		return "lid", p, userPart
+	}
+	if l, ok := r.LIDForPhone(userPart); ok {
+		return "phone", userPart, l
+	}
+	return "phone", userPart, ""
+}
+
 // Normalize converts a types.JID from the @lid namespace to @s.whatsapp.net
 // when a mapping is known. Other JIDs (groups, newsletters, already-phone)
 // are returned unchanged.

@@ -26,13 +26,43 @@ export interface ChatSummary {
 
 export interface MessageRecord {
   id: string;
-  from: string;
-  senderName?: string;
+  from: string;              // bare user-part (backwards compatible)
+  fromJid?: string;          // full JID e.g. "70935881228289@lid"
+  fromType?: "phone" | "lid";
+  fromPhone?: string;        // resolved phone when fromType=lid and mapping known
+  senderName?: string;       // best display name (saved > push)
+  senderPushName?: string;
+  senderSavedName?: string;
   body: string;
   timestamp: number;
   isFromMe: boolean;
   hasMedia: boolean;
   mediaType?: string;
+  quotedMessageId?: string;
+  chatJid?: string;          // populated by getMessage and searchMessages
+}
+
+export interface SenderMeta {
+  jid: string;
+  type: "phone" | "lid";
+  user: string;
+  phone?: string;
+  pushName?: string;
+  savedName?: string;
+}
+
+export interface GroupParticipant extends SenderMeta {
+  isAdmin: boolean;
+  isSuperAdmin: boolean;
+}
+
+export interface SearchMessagesOpts {
+  query?: string;
+  chatJid?: string;
+  from?: string;
+  since?: number;
+  until?: number;
+  limit?: number;
 }
 
 export interface ContactRecord {
@@ -137,6 +167,31 @@ export class BridgeClient {
 
   async logout(): Promise<{ ok: boolean }> {
     return this.post<{ ok: boolean }>("/logout", {});
+  }
+
+  async resolveJid(jid: string): Promise<SenderMeta> {
+    return this.get<SenderMeta>(`/jid/${encodeURIComponent(jid)}/resolve`);
+  }
+
+  async listGroupParticipants(chatId: string): Promise<GroupParticipant[]> {
+    return this.get<GroupParticipant[]>(
+      `/groups/${encodeURIComponent(chatId)}/participants`
+    );
+  }
+
+  async searchMessages(opts: SearchMessagesOpts): Promise<MessageRecord[]> {
+    const params = new URLSearchParams();
+    if (opts.query) params.set("q", opts.query);
+    if (opts.chatJid) params.set("chat", opts.chatJid);
+    if (opts.from) params.set("from", opts.from);
+    if (opts.since) params.set("since", String(opts.since));
+    if (opts.until) params.set("until", String(opts.until));
+    if (opts.limit) params.set("limit", String(opts.limit));
+    return this.get<MessageRecord[]>(`/messages/search?${params}`);
+  }
+
+  async getMessage(messageId: string): Promise<MessageRecord> {
+    return this.get<MessageRecord>(`/messages/${encodeURIComponent(messageId)}`);
   }
 
   private get<T>(path: string): Promise<T> {

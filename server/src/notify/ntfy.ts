@@ -73,7 +73,7 @@ export class Notifier {
   async notifyDisconnect(reason: string): Promise<void> {
     await this.notify(
       "disconnect",
-      "wactl — QR Scan Required",
+      "wactl - QR Scan Required",
       `WhatsApp session disconnected (${reason}). Tap to re-authenticate.`
     );
   }
@@ -81,7 +81,7 @@ export class Notifier {
   async notifyUpdateFailed(version: string): Promise<void> {
     await this.notify(
       "update_failed",
-      "wactl — Auto-update Failed",
+      "wactl - Auto-update Failed",
       `Auto-update to ${version} failed. Manual review needed.`
     );
   }
@@ -89,7 +89,7 @@ export class Notifier {
   async notifyQRReady(): Promise<void> {
     await this.notify(
       "qr_ready",
-      "wactl — QR Code Ready",
+      "wactl - QR Code Ready",
       "WhatsApp needs re-authentication. Tap to scan QR code."
     );
   }
@@ -97,7 +97,7 @@ export class Notifier {
   async notifyConnected(account: string): Promise<void> {
     await this.notify(
       "connected",
-      "wactl — Connected",
+      "wactl - Connected",
       `WhatsApp session restored (account: ${account}).`,
       "default"
     );
@@ -106,7 +106,7 @@ export class Notifier {
   async notifyUpdateSuccess(version: string): Promise<void> {
     await this.notify(
       "update_success",
-      "wactl — Updated",
+      "wactl - Updated",
       `whatsmeow updated to ${version}. Bridge restarted.`,
       "default"
     );

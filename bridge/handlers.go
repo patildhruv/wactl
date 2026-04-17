@@ -168,6 +168,7 @@ func (b *BridgeState) handleMessage(msg *events.Message) {
 
 	content := extractText(msg.Message)
 	mediaType, filename, url, mediaKey, fileSHA256, fileEncSHA256, fileLength := extractMediaInfo(msg.Message)
+	quotedID := extractQuotedID(msg.Message)
 
 	if content == "" && mediaType == "" {
 		return
@@ -175,7 +176,7 @@ func (b *BridgeState) handleMessage(msg *events.Message) {
 
 	if err := b.Store.StoreMessage(
 		msg.Info.ID, chatJIDStr, sender, content, msg.Info.Timestamp, msg.Info.IsFromMe,
-		mediaType, filename, url, mediaKey, fileSHA256, fileEncSHA256, fileLength,
+		mediaType, filename, url, mediaKey, fileSHA256, fileEncSHA256, fileLength, quotedID,
 	); err != nil {
 		b.Logger.Warnf("Store message error: %v", err)
 	}
@@ -265,8 +266,12 @@ func (b *BridgeState) handleHistorySync(evt *events.HistorySync) {
 				msgID = *msg.Message.Key.ID
 			}
 
+			quotedID := ""
+			if msg.Message.Message != nil {
+				quotedID = extractQuotedID(msg.Message.Message)
+			}
 			_ = b.Store.UpsertChat(chatJID, name, ts)
-			if err := b.Store.StoreMessage(msgID, chatJID, sender, content, ts, isFromMe, mType, fname, mURL, mKey, fSHA, fEncSHA, fLen); err == nil {
+			if err := b.Store.StoreMessage(msgID, chatJID, sender, content, ts, isFromMe, mType, fname, mURL, mKey, fSHA, fEncSHA, fLen, quotedID); err == nil {
 				count++
 			}
 		}
@@ -320,6 +325,41 @@ func extractText(msg *waProto.Message) string {
 	}
 	if ext := msg.GetExtendedTextMessage(); ext != nil {
 		return ext.GetText()
+	}
+	return ""
+}
+
+// extractQuotedID pulls the stanza ID of the message being replied to, if any.
+// whatsmeow stores context info on every message type that can carry a reply
+// (extended text, image, video, audio, document). Empty string when not a reply.
+func extractQuotedID(msg *waProto.Message) string {
+	if msg == nil {
+		return ""
+	}
+	if ext := msg.GetExtendedTextMessage(); ext != nil {
+		if ctx := ext.GetContextInfo(); ctx != nil {
+			return ctx.GetStanzaID()
+		}
+	}
+	if img := msg.GetImageMessage(); img != nil {
+		if ctx := img.GetContextInfo(); ctx != nil {
+			return ctx.GetStanzaID()
+		}
+	}
+	if vid := msg.GetVideoMessage(); vid != nil {
+		if ctx := vid.GetContextInfo(); ctx != nil {
+			return ctx.GetStanzaID()
+		}
+	}
+	if aud := msg.GetAudioMessage(); aud != nil {
+		if ctx := aud.GetContextInfo(); ctx != nil {
+			return ctx.GetStanzaID()
+		}
+	}
+	if doc := msg.GetDocumentMessage(); doc != nil {
+		if ctx := doc.GetContextInfo(); ctx != nil {
+			return ctx.GetStanzaID()
+		}
 	}
 	return ""
 }

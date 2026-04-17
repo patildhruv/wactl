@@ -67,7 +67,27 @@ func NewMessageStore(dataDir string) (*MessageStore, error) {
 		return nil, fmt.Errorf("create tables: %w", err)
 	}
 
-	return &MessageStore{db: db}, nil
+	s := &MessageStore{db: db}
+
+	// Idempotent column add: quoted_message_id was introduced after the initial
+	// schema. ALTER TABLE ADD COLUMN errors on re-run, so gate behind a
+	// schema_migrations row.
+	if applied, err := s.migrationApplied("add_quoted_message_id"); err == nil && !applied {
+		if _, err := db.Exec(`ALTER TABLE messages ADD COLUMN quoted_message_id TEXT`); err != nil {
+			// Column may already exist on DBs that were created under a newer build.
+			// Treat any error as "effectively present" — verified below via a probe query.
+			if _, probeErr := db.Exec(`SELECT quoted_message_id FROM messages LIMIT 1`); probeErr != nil {
+				db.Close()
+				return nil, fmt.Errorf("add quoted_message_id column: %w", err)
+			}
+		}
+		if err := s.markMigrationApplied("add_quoted_message_id"); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("mark migration: %w", err)
+		}
+	}
+
+	return s, nil
 }
 
 // migrationApplied reports whether a named migration has already run.
@@ -303,6 +323,16 @@ func (s *MessageStore) GetContactName(jid string) string {
 	return name
 }
 
+// GetContactInfo returns push name and full (saved) name for a JID. Used by
+// enrichSender when resolving a sender's identity.
+func (s *MessageStore) GetContactInfo(jid string) (pushName, fullName string) {
+	_ = s.db.QueryRow(
+		`SELECT COALESCE(push_name,''), COALESCE(full_name,'') FROM contacts WHERE jid = ?`,
+		jid,
+	).Scan(&pushName, &fullName)
+	return
+}
+
 // GetContactNames returns a map of JID → display name for a set of sender identifiers.
 // Senders can be bare phone numbers (e.g., "1234567890") or full JIDs.
 func (s *MessageStore) GetContactNames(senders []string) map[string]string {
@@ -353,19 +383,73 @@ func (s *MessageStore) GetContactNames(senders []string) map[string]string {
 	return result
 }
 
-// StoreMessage inserts a message, skipping empty ones.
+// StoreMessage inserts a message, skipping empty ones. quotedMessageID is
+// optional — empty string when the message isn't a reply.
 func (s *MessageStore) StoreMessage(id, chatJID, sender, content string, ts time.Time, isFromMe bool,
-	mediaType, filename, url string, mediaKey, fileSHA256, fileEncSHA256 []byte, fileLength uint64) error {
+	mediaType, filename, url string, mediaKey, fileSHA256, fileEncSHA256 []byte, fileLength uint64,
+	quotedMessageID string) error {
 	if content == "" && mediaType == "" {
 		return nil
 	}
 	_, err := s.db.Exec(
 		`INSERT OR REPLACE INTO messages
-		 (id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url, media_key, file_sha256, file_enc_sha256, file_length)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, chatJID, sender, content, ts, isFromMe, mediaType, filename, url, mediaKey, fileSHA256, fileEncSHA256, fileLength,
+		 (id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url, media_key, file_sha256, file_enc_sha256, file_length, quoted_message_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, chatJID, sender, content, ts, isFromMe, mediaType, filename, url, mediaKey, fileSHA256, fileEncSHA256, fileLength, quotedMessageID,
 	)
 	return err
+}
+
+// enrichMessages populates the sender metadata fields on every row in place.
+// Pulled out so GetMessages / SearchMessages / GetMessageByID share one path.
+func enrichMessages(msgs []MessageRecord, resolver *LIDResolver, store *MessageStore) {
+	for i := range msgs {
+		meta := buildSenderMeta(msgs[i].From, resolver, store)
+		msgs[i].FromJID = meta.JID
+		msgs[i].FromType = meta.Type
+		msgs[i].FromPhone = meta.Phone
+		msgs[i].SenderPushName = meta.PushName
+		msgs[i].SenderSavedName = meta.SavedName
+		// Preserve existing SenderName precedence: saved → push
+		if msgs[i].SenderName == "" {
+			if meta.SavedName != "" {
+				msgs[i].SenderName = meta.SavedName
+			} else if meta.PushName != "" {
+				msgs[i].SenderName = meta.PushName
+			}
+		}
+	}
+}
+
+// buildSenderMeta resolves a bare user-part into a fully-typed SenderMeta.
+// Works whether the user-part is a phone number, a LID, or something we've
+// never seen; unmapped LIDs come back with Type="lid" and Phone="".
+func buildSenderMeta(userPart string, resolver *LIDResolver, store *MessageStore) SenderMeta {
+	if userPart == "" {
+		return SenderMeta{}
+	}
+	jidType, phone, lid := resolver.Classify(userPart)
+	server := "s.whatsapp.net"
+	if jidType == "lid" {
+		server = "lid"
+	}
+	meta := SenderMeta{
+		JID:   userPart + "@" + server,
+		Type:  jidType,
+		User:  userPart,
+		Phone: phone,
+	}
+	if store != nil {
+		// Try the phone-JID form first — saved contacts are keyed this way.
+		if phone != "" {
+			meta.PushName, meta.SavedName = store.GetContactInfo(phone + "@s.whatsapp.net")
+		}
+		// Fall back to the LID-JID form when phone lookup yielded nothing.
+		if meta.PushName == "" && meta.SavedName == "" && lid != "" {
+			meta.PushName, meta.SavedName = store.GetContactInfo(lid + "@lid")
+		}
+	}
+	return meta
 }
 
 // ChatSummary is returned by GetChats.
@@ -416,33 +500,73 @@ func (s *MessageStore) GetChats() ([]ChatSummary, error) {
 	return chats, rows.Err()
 }
 
-// MessageRecord is returned by GetMessages.
+// MessageRecord is returned by GetMessages / GetMessageByID / SearchMessages.
+//
+// Sender identity is now reported in several shapes so LLM callers can tell at
+// a glance whether a sender is a phone, a LID (WhatsApp's anonymized ID used
+// in groups), or a group participant without the same identity across chats.
+//   - From            — bare user-part (unchanged; backwards compatible)
+//   - FromJID         — full JID string e.g. "70935881228289@lid"
+//   - FromType        — "phone" | "lid"
+//   - FromPhone       — resolved phone when the sender is a LID with a known mapping
+//   - SenderPushName  — the name they set on their profile
+//   - SenderSavedName — full name from the user's address book (takes precedence in SenderName)
+//   - SenderName      — best display name: saved → push → empty (preserved for compat)
 type MessageRecord struct {
-	ID         string `json:"id"`
-	From       string `json:"from"`
-	SenderName string `json:"senderName,omitempty"`
-	Body       string `json:"body"`
-	Timestamp  int64  `json:"timestamp"`
-	IsFromMe   bool   `json:"isFromMe"`
-	HasMedia   bool   `json:"hasMedia"`
-	MediaType  string `json:"mediaType,omitempty"`
+	ID              string `json:"id"`
+	From            string `json:"from"`
+	FromJID         string `json:"fromJid,omitempty"`
+	FromType        string `json:"fromType,omitempty"`
+	FromPhone       string `json:"fromPhone,omitempty"`
+	SenderName      string `json:"senderName,omitempty"`
+	SenderPushName  string `json:"senderPushName,omitempty"`
+	SenderSavedName string `json:"senderSavedName,omitempty"`
+	Body            string `json:"body"`
+	Timestamp       int64  `json:"timestamp"`
+	IsFromMe        bool   `json:"isFromMe"`
+	HasMedia        bool   `json:"hasMedia"`
+	MediaType       string `json:"mediaType,omitempty"`
+	QuotedMessageID string `json:"quotedMessageId,omitempty"`
+	ChatJID         string `json:"chatJid,omitempty"` // populated by GetMessageByID and SearchMessages
 }
 
-// GetMessages returns messages for a chat, newest first, with sender names resolved.
-func (s *MessageStore) GetMessages(chatJID string, limit int, before int64) ([]MessageRecord, error) {
+// SenderMeta is the enriched sender block used for resolve_jid and group
+// participant responses. Mirrors the sender fields on MessageRecord.
+type SenderMeta struct {
+	JID       string `json:"jid"`
+	Type      string `json:"type"`
+	User      string `json:"user"`
+	Phone     string `json:"phone,omitempty"`
+	PushName  string `json:"pushName,omitempty"`
+	SavedName string `json:"savedName,omitempty"`
+}
+
+// SearchMessagesOpts filters SearchMessages. Zero-value fields are ignored.
+type SearchMessagesOpts struct {
+	Query   string
+	ChatJID string
+	Sender  string // bare user-part; matched against messages.sender
+	Since   int64  // unix seconds inclusive, 0 = no lower bound
+	Until   int64  // unix seconds inclusive, 0 = no upper bound
+	Limit   int    // default 50, clamped to [1, 500]
+}
+
+// GetMessages returns messages for a chat, newest first, with sender identity enriched.
+// Pass resolver=nil for backwards compat (no LID classification — tests only).
+func (s *MessageStore) GetMessages(chatJID string, limit int, before int64, resolver *LIDResolver) ([]MessageRecord, error) {
 	var rows *sql.Rows
 	var err error
 
 	if before > 0 {
 		rows, err = s.db.Query(
-			`SELECT id, sender, content, timestamp, is_from_me, media_type
+			`SELECT id, sender, content, timestamp, is_from_me, media_type, COALESCE(quoted_message_id,'')
 			 FROM messages WHERE chat_jid = ? AND timestamp < ?
 			 ORDER BY timestamp DESC LIMIT ?`,
 			chatJID, time.Unix(before, 0), limit,
 		)
 	} else {
 		rows, err = s.db.Query(
-			`SELECT id, sender, content, timestamp, is_from_me, media_type
+			`SELECT id, sender, content, timestamp, is_from_me, media_type, COALESCE(quoted_message_id,'')
 			 FROM messages WHERE chat_jid = ?
 			 ORDER BY timestamp DESC LIMIT ?`,
 			chatJID, limit,
@@ -454,12 +578,11 @@ func (s *MessageStore) GetMessages(chatJID string, limit int, before int64) ([]M
 	defer rows.Close()
 
 	var msgs []MessageRecord
-	senderSet := make(map[string]bool)
 	for rows.Next() {
 		var m MessageRecord
 		var ts time.Time
 		var mediaType sql.NullString
-		if err := rows.Scan(&m.ID, &m.From, &m.Body, &ts, &m.IsFromMe, &mediaType); err != nil {
+		if err := rows.Scan(&m.ID, &m.From, &m.Body, &ts, &m.IsFromMe, &mediaType, &m.QuotedMessageID); err != nil {
 			return nil, err
 		}
 		m.Timestamp = ts.Unix()
@@ -467,25 +590,110 @@ func (s *MessageStore) GetMessages(chatJID string, limit int, before int64) ([]M
 			m.HasMedia = true
 			m.MediaType = mediaType.String
 		}
-		senderSet[m.From] = true
 		msgs = append(msgs, m)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 
-	// Resolve sender names in batch
-	senders := make([]string, 0, len(senderSet))
-	for sender := range senderSet {
-		senders = append(senders, sender)
+	enrichMessages(msgs, resolver, s)
+	return msgs, nil
+}
+
+// GetMessageByID fetches a single message by its ID. Useful for resolving
+// quoted/forwarded message references without scanning a whole chat.
+func (s *MessageStore) GetMessageByID(messageID string, resolver *LIDResolver) (MessageRecord, error) {
+	var m MessageRecord
+	var ts time.Time
+	var mediaType sql.NullString
+	err := s.db.QueryRow(
+		`SELECT id, chat_jid, sender, content, timestamp, is_from_me, media_type, COALESCE(quoted_message_id,'')
+		 FROM messages WHERE id = ? LIMIT 1`,
+		messageID,
+	).Scan(&m.ID, &m.ChatJID, &m.From, &m.Body, &ts, &m.IsFromMe, &mediaType, &m.QuotedMessageID)
+	if err != nil {
+		return m, err
 	}
-	nameMap := s.GetContactNames(senders)
-	for i := range msgs {
-		if name, ok := nameMap[msgs[i].From]; ok {
-			msgs[i].SenderName = name
-		}
+	m.Timestamp = ts.Unix()
+	if mediaType.Valid && mediaType.String != "" {
+		m.HasMedia = true
+		m.MediaType = mediaType.String
+	}
+	buf := []MessageRecord{m}
+	enrichMessages(buf, resolver, s)
+	return buf[0], nil
+}
+
+// SearchMessages returns messages matching the search options, newest first.
+// Empty / zero fields on opts are ignored. Results are enriched.
+func (s *MessageStore) SearchMessages(opts SearchMessagesOpts, resolver *LIDResolver) ([]MessageRecord, error) {
+	if opts.Limit <= 0 {
+		opts.Limit = 50
+	}
+	if opts.Limit > 500 {
+		opts.Limit = 500
 	}
 
+	conds := []string{}
+	args := []interface{}{}
+	if opts.Query != "" {
+		conds = append(conds, "content LIKE ?")
+		args = append(args, "%"+opts.Query+"%")
+	}
+	if opts.ChatJID != "" {
+		conds = append(conds, "chat_jid = ?")
+		args = append(args, opts.ChatJID)
+	}
+	if opts.Sender != "" {
+		conds = append(conds, "sender = ?")
+		args = append(args, opts.Sender)
+	}
+	if opts.Since > 0 {
+		conds = append(conds, "timestamp >= ?")
+		args = append(args, time.Unix(opts.Since, 0))
+	}
+	if opts.Until > 0 {
+		conds = append(conds, "timestamp <= ?")
+		args = append(args, time.Unix(opts.Until, 0))
+	}
+
+	where := ""
+	if len(conds) > 0 {
+		where = "WHERE " + strings.Join(conds, " AND ")
+	}
+	args = append(args, opts.Limit)
+
+	rows, err := s.db.Query(
+		`SELECT id, chat_jid, sender, content, timestamp, is_from_me, media_type, COALESCE(quoted_message_id,'')
+		 FROM messages `+where+`
+		 ORDER BY timestamp DESC LIMIT ?`,
+		args...,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var msgs []MessageRecord
+	for rows.Next() {
+		var m MessageRecord
+		var ts time.Time
+		var mediaType sql.NullString
+		if err := rows.Scan(&m.ID, &m.ChatJID, &m.From, &m.Body, &ts, &m.IsFromMe, &mediaType, &m.QuotedMessageID); err != nil {
+			return nil, err
+		}
+		m.Timestamp = ts.Unix()
+		if mediaType.Valid && mediaType.String != "" {
+			m.HasMedia = true
+			m.MediaType = mediaType.String
+		}
+		msgs = append(msgs, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	enrichMessages(msgs, resolver, s)
 	return msgs, nil
 }
 
