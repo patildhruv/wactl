@@ -202,6 +202,11 @@ func (b *BridgeState) handleMessage(msg *events.Message) {
 }
 
 func (b *BridgeState) handleHistorySync(evt *events.HistorySync) {
+	syncType := ""
+	if evt.Data != nil && evt.Data.SyncType != nil {
+		syncType = evt.Data.SyncType.String()
+	}
+	b.Logger.Infof("HistorySync received: type=%s conversations=%d", syncType, len(evt.Data.GetConversations()))
 	count := 0
 	for _, conv := range evt.Data.Conversations {
 		if conv.ID == nil {
@@ -214,6 +219,7 @@ func (b *BridgeState) handleHistorySync(evt *events.HistorySync) {
 		// Normalize @lid chats so history merges with the phone-JID conversation.
 		jid = b.Resolver.Normalize(jid)
 		chatJID := jid.String()
+		b.Logger.Infof("HistorySync conv: id=%s rawMessages=%d", chatJID, len(conv.Messages))
 
 		name := resolveChatName(b.Client, b.Store, jid, chatJID, conv, "", b.Logger)
 
@@ -325,6 +331,24 @@ func extractText(msg *waProto.Message) string {
 	}
 	if ext := msg.GetExtendedTextMessage(); ext != nil {
 		return ext.GetText()
+	}
+	// Captions ride on the media message itself, not in a wrapper. Without
+	// these, image/video/document messages land with body="" and the LLM has
+	// no idea what the sender said alongside the attachment.
+	if img := msg.GetImageMessage(); img != nil {
+		if c := img.GetCaption(); c != "" {
+			return c
+		}
+	}
+	if vid := msg.GetVideoMessage(); vid != nil {
+		if c := vid.GetCaption(); c != "" {
+			return c
+		}
+	}
+	if doc := msg.GetDocumentMessage(); doc != nil {
+		if c := doc.GetCaption(); c != "" {
+			return c
+		}
 	}
 	return ""
 }
