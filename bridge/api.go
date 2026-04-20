@@ -33,6 +33,7 @@ func (b *BridgeState) StartAPI(port int) *http.Server {
 	mux.HandleFunc("/send", b.handleSend)
 	mux.HandleFunc("/send-file", b.handleSendFile)
 	mux.HandleFunc("/logout", b.handleLogout)
+	mux.HandleFunc("/resync", b.handleResync)
 	mux.HandleFunc("/messages/search", b.handleSearchMessages)
 
 	// Pattern-based routes
@@ -549,6 +550,72 @@ func (b *BridgeState) handleMessageByID(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	jsonResp(w, http.StatusOK, msg)
+}
+
+// POST /resync body: {"chatJid": "...", "anchorMessageId": "...", "count": 50}
+// Requests an on-demand history sync from WhatsApp for messages strictly
+// before `anchorMessageId` in the given chat. Response arrives asynchronously
+// as an events.HistorySync with SyncType=ON_DEMAND and is processed by
+// handleHistorySync (INSERT OR REPLACE upserts — safe to re-run).
+//
+// Use this to recover messages that were stored with missing fields (e.g.
+// captions before the extractText caption fix).
+func (b *BridgeState) handleResync(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		jsonErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if !b.Client.IsConnected() {
+		jsonErr(w, http.StatusServiceUnavailable, "not connected to WhatsApp")
+		return
+	}
+
+	var body struct {
+		ChatJID         string `json:"chatJid"`
+		AnchorMessageID string `json:"anchorMessageId"`
+		Count           int    `json:"count"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		jsonErr(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	if body.ChatJID == "" || body.AnchorMessageID == "" {
+		jsonErr(w, http.StatusBadRequest, "chatJid and anchorMessageId are required")
+		return
+	}
+	if body.Count <= 0 || body.Count > 500 {
+		body.Count = 50
+	}
+
+	chatJID, err := types.ParseJID(body.ChatJID)
+	if err != nil {
+		jsonErr(w, http.StatusBadRequest, "invalid chatJid: "+err.Error())
+		return
+	}
+
+	anchor, err := b.Store.GetMessageByID(body.AnchorMessageID, b.Resolver)
+	if err != nil {
+		jsonErr(w, http.StatusNotFound, "anchor message not found in store")
+		return
+	}
+
+	info := &types.MessageInfo{
+		MessageSource: types.MessageSource{Chat: chatJID, IsFromMe: anchor.IsFromMe},
+		ID:            anchor.ID,
+		Timestamp:     time.Unix(anchor.Timestamp, 0),
+	}
+	req := b.Client.BuildHistorySyncRequest(info, body.Count)
+	resp, err := b.Client.SendPeerMessage(context.Background(), req)
+	if err != nil {
+		jsonErr(w, http.StatusInternalServerError, "send peer message: "+err.Error())
+		return
+	}
+	b.Logger.Infof("Resync requested: chat=%s anchor=%s count=%d peerMsgId=%s", body.ChatJID, body.AnchorMessageID, body.Count, resp.ID)
+	jsonResp(w, http.StatusAccepted, map[string]interface{}{
+		"ok":             true,
+		"peerMessageId":  resp.ID,
+		"note":           "history sync response arrives asynchronously; re-query the chat after a few seconds",
+	})
 }
 
 // POST /logout
