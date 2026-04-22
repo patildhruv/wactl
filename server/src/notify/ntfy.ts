@@ -94,6 +94,14 @@ export class Notifier {
     );
   }
 
+  async notifyStuckOffline(minutes: number): Promise<void> {
+    await this.notify(
+      "stuck_offline",
+      "wactl - Offline",
+      `WhatsApp bridge has been unable to reconnect for ${minutes}+ minutes. Check the service / network / session.`
+    );
+  }
+
   async notifyConnected(account: string): Promise<void> {
     await this.notify(
       "connected",

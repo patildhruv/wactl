@@ -178,6 +178,43 @@ callbackServer.listen(CALLBACK_PORT, "127.0.0.1", () => {
   console.log(`[wactl] Bridge callback listener on port ${CALLBACK_PORT}`);
 });
 
+// --- Stuck-offline watchdog ---
+// whatsmeow emits no callback when it fails to reconnect — it just silently
+// keeps trying. Poll bridge /status every minute; if `connected` stays false
+// for WATCHDOG_TRIP_MINUTES, fire a dedicated ntfy and arm the connected
+// event so the eventual recovery pings the user too.
+const WATCHDOG_POLL_MS = 60_000;
+const WATCHDOG_TRIP_MINUTES = 5;
+let consecutiveOfflinePolls = 0;
+let stuckNotified = false;
+
+setInterval(async () => {
+  try {
+    const status = await bridge.getStatus();
+    if (status.connected) {
+      if (stuckNotified) {
+        // Recovery: arm the connected ntfy so the user gets the "back online" ping.
+        pendingReconnectNotify = true;
+      }
+      consecutiveOfflinePolls = 0;
+      stuckNotified = false;
+      return;
+    }
+    consecutiveOfflinePolls += 1;
+    if (!stuckNotified && consecutiveOfflinePolls >= WATCHDOG_TRIP_MINUTES) {
+      stuckNotified = true;
+      notifier.notifyStuckOffline(WATCHDOG_TRIP_MINUTES);
+    }
+  } catch {
+    // Bridge itself unreachable — treat as offline.
+    consecutiveOfflinePolls += 1;
+    if (!stuckNotified && consecutiveOfflinePolls >= WATCHDOG_TRIP_MINUTES) {
+      stuckNotified = true;
+      notifier.notifyStuckOffline(WATCHDOG_TRIP_MINUTES);
+    }
+  }
+}, WATCHDOG_POLL_MS);
+
 // Graceful shutdown
 process.on("SIGTERM", () => {
   console.log("[wactl] Shutting down...");
