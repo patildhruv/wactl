@@ -9,7 +9,6 @@ import { BridgeClient } from "./bridge/client";
 import { MCPServerWrapper } from "./mcp/server";
 import { createAdminRouter } from "./admin/routes";
 import { Notifier } from "./notify/ntfy";
-import { AutoUpdater } from "./updater/index";
 import { mcpAuthRouter } from "@modelcontextprotocol/sdk/server/auth/router.js";
 import { WactlOAuthProvider } from "./mcp/oauth";
 
@@ -23,7 +22,6 @@ const MCP_API_KEY = process.env.MCP_API_KEY || "";
 const ADMIN_USER = process.env.ADMIN_USER || "admin";
 const ADMIN_PASSWORD_HASH = process.env.ADMIN_PASSWORD_HASH || "";
 const DATA_DIR = process.env.DATA_DIR || path.resolve(__dirname, "../../data");
-const BRIDGE_DIR = process.env.BRIDGE_DIR || path.resolve(__dirname, "../../bridge");
 const BASE_PATH = process.env.BASE_PATH || ""; // e.g. "/myname" for multi-instance
 const PUBLIC_URL = process.env.PUBLIC_URL || ""; // e.g. "https://wactl.example.com" — enables OAuth
 
@@ -140,12 +138,6 @@ const adminHttpServer = http.createServer(adminApp);
 adminHttpServer.listen(ADMIN_PORT, () => {
   console.log(`[wactl] Admin panel listening on port ${ADMIN_PORT}`);
 });
-
-// --- Auto-updater ---
-if (process.env.AUTO_UPDATE !== "false") {
-  const updater = new AutoUpdater(DATA_DIR, BRIDGE_DIR, notifier);
-  updater.start(process.env.AUTO_UPDATE_CRON || "0 3 * * *");
-}
 
 // --- Bridge callback handler ---
 // Set up a simple callback endpoint that the Go bridge can POST events to

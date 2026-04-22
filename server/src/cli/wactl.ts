@@ -63,12 +63,6 @@ program
       const mcpPort = data.mcpPort || process.env.MCP_PORT || "3000";
       const mcpIcon = chalk.green(`Listening :${mcpPort}`);
       const apiKey = process.env.MCP_API_KEY || "not set";
-      const autoUpdate = process.env.AUTO_UPDATE !== "false" ? chalk.green("Enabled") : chalk.red("Disabled");
-
-      const lastUpdate = data.updateHistory?.[0];
-      const lastCheck = lastUpdate
-        ? `${lastUpdate.action} (${lastUpdate.result})`
-        : "No checks yet";
 
       const lines = [
         `  WhatsApp     ${connIcon}`,
@@ -78,9 +72,6 @@ program
         `  MCP Server   ${mcpIcon}`,
         `  API Key      ${maskKey(apiKey)}`,
         `  Clients      ${data.mcpClients || 0}`,
-        "",
-        `  Auto-Update  ${autoUpdate}`,
-        `  Last Check   ${lastCheck}`,
       ];
 
       console.log(

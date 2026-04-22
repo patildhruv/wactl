@@ -136,27 +136,16 @@ export function createAdminRouter(
   router.get("/api/status", requireAuthOrLocal, async (_req: Request, res: Response) => {
     try {
       const bridgeStatus = await bridge.getStatus();
-      const updateHistoryPath = path.join(config.dataDir, "update-history.json");
-      let updateHistory: unknown[] = [];
-      try {
-        const raw = fs.readFileSync(updateHistoryPath, "utf-8");
-        updateHistory = JSON.parse(raw);
-      } catch {
-        // No update history file yet
-      }
-
       res.json({
         bridge: bridgeStatus,
         mcpPort: config.mcpPort,
         mcpClients: mcpServer.getConnectedClients(),
-        updateHistory,
       });
     } catch (err) {
       res.json({
         bridge: { connected: false, loggedIn: false, uptime: 0, account: "" },
         mcpPort: config.mcpPort,
         mcpClients: 0,
-        updateHistory: [],
         error: "Bridge unreachable",
       });
     }
