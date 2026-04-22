@@ -145,17 +145,29 @@ const CALLBACK_PORT = parseInt(process.env.CALLBACK_PORT || "4001", 10);
 const callbackApp = express();
 callbackApp.use(express.json());
 
+// Gate the "session restored" ntfy on a real session break (QR scan, logout,
+// stream replaced) rather than every silent websocket reconnect. whatsmeow
+// drops + reauths on its own several times a day; without this gate the user
+// gets a "session restored" ntfy every couple of hours, which trains them to
+// ignore it — defeating the point of ever sending one.
+let pendingReconnectNotify = false;
+
 callbackApp.post("/bridge/events", (req, res) => {
   const event = req.body?.event;
   console.log(`[wactl] Bridge event: ${event}`);
 
   if (event === "logged_out" || event === "stream_replaced") {
+    pendingReconnectNotify = true;
     notifier.notifyDisconnect(event);
   } else if (event === "qr_ready") {
+    pendingReconnectNotify = true;
     notifier.notifyQRReady();
   } else if (event === "connected") {
-    const account = req.body?.account || "unknown";
-    notifier.notifyConnected(account);
+    if (pendingReconnectNotify) {
+      pendingReconnectNotify = false;
+      const account = req.body?.account || "unknown";
+      notifier.notifyConnected(account);
+    }
   }
 
   res.json({ ok: true });
