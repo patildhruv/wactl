@@ -20,12 +20,27 @@ KEYWORD_RE='lid|identity|protocol|breaking|ratchet|session|pair|auth|migrate|mig
 
 WHATSMEOW_REPO="tulir/whatsmeow"
 MAUTRIX_REPO="mautrix/whatsapp"
+BRIDGE_GOMOD="$INSTALL_DIR/bridge/go.mod"
 
 echo "$LOG_PREFIX Starting upstream watch..."
 
 if [ ! -f "$INSTANCES_JSON" ]; then
   echo "$LOG_PREFIX No instances.json — nothing to watch for."
   exit 0
+fi
+
+# Pull the whatsmeow SHA currently pinned in the deployed bridge's go.mod. The
+# pseudo-version looks like "v0.0.0-20260511155711-eb05d94dea7d"; the trailing
+# 12 hex chars are the short commit SHA. Used as the baseline so we never
+# re-alert on commits the 03:00 cron-update already pulled and deployed
+# earlier the same day.
+DEPLOYED_SHA=""
+if [ -f "$BRIDGE_GOMOD" ]; then
+  PSEUDO=$(grep -E '^[[:space:]]*go\.mau\.fi/whatsmeow' "$BRIDGE_GOMOD" | awk '{print $2}')
+  if [[ "$PSEUDO" =~ -([0-9a-f]{12})$ ]]; then
+    DEPLOYED_SHA="${BASH_REMATCH[1]}"
+    echo "$LOG_PREFIX Deployed whatsmeow SHA: $DEPLOYED_SHA"
+  fi
 fi
 
 # Load prior state (shell-safe key=value lines).
@@ -100,31 +115,41 @@ if [ -z "$WHATSMEOW_JSON" ] || ! echo "$WHATSMEOW_JSON" | jq -e 'type == "array"
 else
   LATEST_SHA=$(echo "$WHATSMEOW_JSON" | jq -r '.[0].sha')
 
-  if [ -z "$WHATSMEOW_LAST_SHA" ]; then
-    # First run — seed state without alerting (avoid a huge backlog ping).
+  # Baseline = whichever short-SHA we trust most.
+  # Prefer the deployed bridge's pinned SHA over the state file, since the
+  # 03:00 cron-update may have deployed past whatever this script last saw —
+  # alerting again on those commits would be duplicate noise. State file is a
+  # fallback for pre-existing installs where go.mod isn't readable.
+  BASELINE_SHA="${DEPLOYED_SHA:-${WHATSMEOW_LAST_SHA:0:12}}"
+  LATEST_SHORT="${LATEST_SHA:0:12}"
+
+  if [ -z "$BASELINE_SHA" ]; then
+    # First run, no go.mod — seed state without alerting (avoid backlog ping).
     WHATSMEOW_LAST_SHA="$LATEST_SHA"
     echo "$LOG_PREFIX Seeded whatsmeow state to $LATEST_SHA (no alert on first run)."
-  elif [ "$LATEST_SHA" = "$WHATSMEOW_LAST_SHA" ]; then
-    echo "$LOG_PREFIX whatsmeow: no new commits."
+  elif [ "$LATEST_SHORT" = "$BASELINE_SHA" ]; then
+    echo "$LOG_PREFIX whatsmeow: no new commits (baseline=$BASELINE_SHA)."
   else
-    # Pull titles of every commit between LAST and HEAD, filter by keywords.
+    # Pull titles of every commit between BASELINE and HEAD, filter by keywords.
+    # GitHub returns 40-char SHAs; we slice to 12 chars on both sides so the
+    # index() lookup matches the short SHA we derived from go.mod.
     NEW_COMMITS=$(echo "$WHATSMEOW_JSON" | jq -r \
-      --arg last "$WHATSMEOW_LAST_SHA" \
-      '.[0:(map(.sha) | index($last) // 30)] | .[] | "\(.sha[0:7])  \(.commit.message | split("\n")[0])"')
+      --arg last "$BASELINE_SHA" \
+      '.[0:(map(.sha[0:12]) | index($last) // 30)] | .[] | "\(.sha[0:7])  \(.commit.message | split("\n")[0])"')
 
     if [ -z "$NEW_COMMITS" ]; then
-      echo "$LOG_PREFIX whatsmeow: LAST sha not found in recent 30, assuming caught up."
+      echo "$LOG_PREFIX whatsmeow: baseline $BASELINE_SHA not in recent 30, assuming caught up."
     else
       INTERESTING=$(echo "$NEW_COMMITS" | grep -iE "$KEYWORD_RE" || true)
       TOTAL=$(echo "$NEW_COMMITS" | wc -l)
-      echo "$LOG_PREFIX whatsmeow: $TOTAL new commits"
+      echo "$LOG_PREFIX whatsmeow: $TOTAL new commits since deployed $BASELINE_SHA"
 
       if [ -n "$INTERESTING" ]; then
         BODY="ACTION: review commits, watch for silent breakage (check get_chat on active 1:1s).
 
 $(echo "$INTERESTING" | head -10)
 
-$TOTAL commits since last check. Review: https://github.com/$WHATSMEOW_REPO/commits"
+$TOTAL commits since deployed $BASELINE_SHA. Review: https://github.com/$WHATSMEOW_REPO/commits"
         notify "🚨 wactl — whatsmeow: protocol-relevant commits" "high" "$BODY" "rotating_light,mag"
         echo "$LOG_PREFIX Alerted on $(echo "$INTERESTING" | wc -l) keyword-matching commits."
       fi
