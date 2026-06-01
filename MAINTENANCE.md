@@ -46,9 +46,11 @@ Fix, build, test, deploy
 ## Routine Maintenance
 
 ### Daily (automated)
-- The `update-check.sh` cron runs at 3 AM (configurable via `AUTO_UPDATE_CRON`)
-- It fetches the latest whatsmeow, attempts a build, self-tests on port 14099, and hot-swaps the binary
+- The `update-check.sh` cron (`/etc/cron.d/wactl-update`, 03:00 UTC by default) fetches the latest whatsmeow, bumps `/opt/wactl/bridge/go.mod` in place, builds, self-tests on port 14099, hot-swaps the instance binary, and ntfys a digest of commits between old and new SHAs (📦 routine bump, 🚨 protocol-relevant).
+- The cron is the **only** update path — the in-process TS `AutoUpdater` was removed in PR #25 because it duplicated the cron and failed every run under the server's restricted env.
 - Check logs: `cat /var/log/wactl-update.log`
+
+> If you rebuild the bridge manually from a dev checkout, rsync source but **skip `go.mod` / `go.sum`** — the cron mutates those in `/opt/wactl/bridge` to carry the latest whatsmeow pin. Overwriting them rolls whatsmeow back silently.
 
 ### Weekly (manual, 2 minutes)
 - `wactl status` — verify bridge is connected, uptime is healthy
@@ -180,6 +182,26 @@ WhatsApp drops sessions that appear idle or misbehave. Known whatsmeow issue (#8
 **Cause:** WhatsApp takes time to sync history on first connection.  
 **Fix:** Wait 2-5 minutes. If still empty after 10 minutes, check bridge logs for sync errors.
 
+### Missing Captions on Old Images/Videos
+**Symptoms:** `get_chat` returns messages with `hasMedia: true` but `body: ""`.  
+**Cause:** Before PR #24, `extractText` only read `Conversation` + `ExtendedTextMessage` — captions on `ImageMessage`/`VideoMessage`/`DocumentMessage` were silently dropped at ingest. New captioned media is stored correctly; historical rows stay empty.  
+**Partial recovery:** `POST /resync {chatJid, anchorMessageId, count}` asks the primary phone for an on-demand history sync. WhatsApp's server often declines for older ranges (the reply comes back as `1 conversation, 0 messages`) — the endpoint is best-effort, not guaranteed.
+
+### Notification Behavior Cheat Sheet
+Ntfy firings follow these rules (`server/src/index.ts` + `server/src/notify/ntfy.ts`):
+
+| Event | Ntfy |
+|---|---|
+| Silent websocket reconnect (EOF, keepalive) | **silent** — noise reduction, PR #26 |
+| `logged_out` / `stream_replaced` / `qr_ready` | fires the relevant disconnect/QR ntfy |
+| `connected` after a real break above | fires "session restored" |
+| Bridge reports `connected=false` for ≥5 min | fires `stuck_offline` (PR #27 watchdog) |
+| Recovery after stuck_offline | fires "session restored" |
+| Daily cron update success (📦 / 🚨) | fires digest ntfy |
+| Daily cron update self-test fail | fires "Auto-update Failed" |
+
+Each event key has its own independent 10-min debounce (`DEBOUNCE_MS` in `notify/ntfy.ts`), so back-to-back identical events dedupe but unrelated events don't suppress each other.
+
 ### `CGO_ENABLED` Build Errors
 **Symptoms:** `sqlite3 requires cgo` or similar.  
 **Fix:**
@@ -213,18 +235,23 @@ If WhatsApp fundamentally changes its multi-device architecture or actively bloc
 
 ## Auto-Updater Deep Dive
 
-The update-check script (`scripts/update-check.sh`) runs daily and does the following:
+The update-check script (`scripts/update-check.sh`) runs daily via `/etc/cron.d/wactl-update` and does the following:
 
 ```
-1. Read current whatsmeow version from go.mod
-2. Fetch latest: go get go.mau.fi/whatsmeow@latest
+1. Read current whatsmeow version from /opt/wactl/bridge/go.mod
+2. Fetch latest via `go list -m go.mau.fi/whatsmeow@latest`
 3. If same version → exit (nothing to do)
-4. If different → attempt build
-5. If build fails → rollback go.mod/go.sum, exit with error
-6. If build succeeds → self-test on port 14099
-7. If self-test passes → swap binary, restart service
-8. If self-test fails → rollback everything
+4. If different → `go get ...@<latest>` + build
+5. If build fails → rollback go.mod/go.sum, send 🚨 build-failed ntfy, exit
+6. If build succeeds → self-test the new binary on port 14099 (checks /status)
+7. If self-test passes → swap binary, restart instance, ntfy digest of commits
+8. If self-test fails → rollback binary + go.mod/go.sum, ntfy failure
 ```
+
+The ntfy body includes a commit-title digest between the old and new SHAs (see `scripts/upstream-watch.sh` for the sibling watcher that monitors whatsmeow before a bump lands). The title is 📦 for routine bumps and 🚨 when any commit title matches the protocol-keyword regex — read those ones carefully.
+
+### Historical note
+There used to be a second, in-process updater inside the TypeScript server (`server/src/updater/index.ts`). It duplicated the cron's job but ran under the server systemd unit, which has no `GOPATH`/`GOMODCACHE`, so `go get` failed every 24h and fired a false-alarm "Auto-update Failed" ntfy. Removed in PR #25 — the cron is the single source of truth.
 
 ### When the auto-updater can't save you
 - **API breaking changes** (new parameters) — build fails, updater rolls back. You need to edit Go code.
