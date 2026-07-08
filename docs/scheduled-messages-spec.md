@@ -518,20 +518,23 @@ able to steer it. Mitigations, in priority order:
   (mirroring `update-check.sh`) and invokes the runner **as the `wactl` user via
   `sudo -u`**. **Scheduled Messages is UNSUPPORTED on Docker** (the image has no
   cron, no systemd, no `claude` CLI) — state this in README + MAINTENANCE.
-- **The dedicated `wactl` user cleanly resolves the earlier "cron-root vs
-  per-user-login" question.** Because runs execute as `wactl` (not root), the
-  `claude` OAuth login is done **once, interactively, as the `wactl` user**, and
-  its `~/.claude/.credentials.json` is exactly what the runner uses. No
-  `CLAUDE_CONFIG_DIR` juggling needed.
-- Headless Claude auth: **both methods installable; implement OAuth (Claude
-  subscription login) now.** API-key mode (`ANTHROPIC_API_KEY`, separate API
-  billing) stays a supported install option for later.
-- **Unmanaged prerequisites the box doesn't have yet:** the `claude` CLI binary
-  is **not** installed by `install.sh` today (it installs Go/Node/Caddy/ntfy),
-  and even once installed it needs a one-time interactive `claude login` as
-  `wactl`. Phase 6 adds the CLI install + a documented login step; the runner
-  ships a **preflight** that ntfys loudly if `claude` is missing or
-  unauthenticated (instead of a cryptic first-tick failure).
+- The dedicated `wactl` user exists for **privilege isolation** (the LLM must not
+  run as root, §13.2) — no longer for credential-per-user reasons.
+- **Headless Claude auth = `ANTHROPIC_API_KEY`** (implemented). The runner reads
+  it from the instance `.env` and injects it into the run env
+  (`schedule-run.sh`); a set key **takes precedence over any ambient claude.ai
+  login** (verified — no `--bare` needed, so Claude Code hooks stay available for
+  the Read/Edit confinement work). This sidesteps the old "cron-root vs
+  per-user-login" wrinkle entirely: no per-user `claude login`, no
+  `~/.claude/.credentials.json` juggling, no `CLAUDE_CONFIG_DIR`.
+  - The key ships **blank** in the `.env`; when blank the runner passes no key
+    and claude falls back to whatever ambient login exists (dev convenience) —
+    but a production install sets the key. An OAuth/subscription login remains a
+    possible fallback but is **not** the supported path.
+- **Unmanaged prerequisite:** the `claude` CLI binary is **not** installed by
+  `install.sh` today (it installs Go/Node/Caddy/ntfy). Phase 6 adds the CLI
+  install; the runner already **preflights** and ntfys loudly if `claude` is
+  missing (instead of a cryptic first-tick failure).
 - `wactl-telegram` runs as a new per-instance systemd unit
   (`wactl-<name>-telegram`), long-polling the bot API, **idle (not crash-loop)
   when `TELEGRAM_BOT_TOKEN` is unset**, and refusing to start if its token/group
@@ -546,7 +549,7 @@ config table too.
 
 ```
 # blank by default — Scheduled Messages stays dormant until filled
-ANTHROPIC_API_KEY=                # (or rely on `claude login` as the wactl user)
+ANTHROPIC_API_KEY=                # runner auth (supported method); takes precedence over any login
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_GROUP_ID=                # -100…
 TELEGRAM_ALLOWED_USER_IDS=        # comma-separated; EMPTY = deny all (fail-closed)
@@ -590,8 +593,9 @@ docs/scheduled-messages-setup.md"* when `TELEGRAM_*` is blank.
    allowlist; natural-language → session; owns all outbound topic posts.
 5. **Watch mode** — `message` branch in `/bridge/events` (+ optional msg-id
    payload) with canonical-identity match; since-based poll backstop in the tick.
-6. **Install + docs** — install the `claude` CLI + documented `claude login` as
-   `wactl` + runner preflight; `wactl-<name>-telegram` unit in the instance block
+6. **Install + docs** — install the `claude` CLI + document setting
+   `ANTHROPIC_API_KEY` in the instance `.env` + runner preflight;
+   `wactl-<name>-telegram` unit in the instance block
    (+ teardown in `--remove`); the shared cron line; new `.env` keys (blank);
    **a server-code upgrade path** (`install.sh --upgrade` / `scripts/upgrade.sh`
    that git-pulls + rebuilds bridge **and** server + redeploys units/cron —
@@ -612,9 +616,10 @@ docs/scheduled-messages-setup.md"* when `TELEGRAM_*` is blank.
 - **Watch mode = event-driven** off the bridge's `message` callback, **backed by
   a since-based poll** (the callback is lossy) — at most a one-line Go change for
   the message id (§11).
-- **Auth / isolation:** runs as a dedicated unprivileged **`wactl` user**, which
-  resolves the old cron-root wrinkle; `claude login` once as `wactl`; both auth
-  methods installable, OAuth now (§14).
+- **Auth / isolation:** runs as a dedicated unprivileged **`wactl` user** (for
+  privilege isolation). Runner auth = **`ANTHROPIC_API_KEY`** from the instance
+  `.env`, which takes precedence over any login (§14) — the old cron-root
+  per-user-login wrinkle is gone.
 - **Multi-instance:** **one bot + one forum group per wactl instance.**
 - **Send enforcement is server-side** per-schedule via a dedicated `schedule_send`
   MCP tool (slug + per-run token in `--mcp-config` headers); `dryRun` via tool

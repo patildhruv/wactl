@@ -599,11 +599,12 @@ if [ "$FIRST_RUN" = true ]; then
   if ! id wactl >/dev/null 2>&1; then
     useradd --system --create-home --shell /usr/sbin/nologin wactl || true
   fi
-  # The claude CLI is a runtime prerequisite; we can't complete its interactive
-  # login for the operator, so warn loudly if it's absent.
+  # The claude CLI is a runtime prerequisite; auth is via ANTHROPIC_API_KEY set in
+  # each instance's .env (the key takes precedence over any login). Warn if the
+  # CLI is missing; the key itself is checked per-instance below.
   if ! command -v claude >/dev/null 2>&1; then
-    echo "  [!] Scheduled Messages needs the 'claude' CLI installed and logged in as the 'wactl' user."
-    echo "      Install Claude Code, then run once:  sudo -u wactl claude   (complete the login)."
+    echo "  [!] Scheduled Messages needs the 'claude' CLI installed on the host."
+    echo "      Install Claude Code, then set ANTHROPIC_API_KEY in the instance .env."
   fi
   # A single shared tick dispatches due schedules across every instance.
   echo "* * * * * root /opt/wactl/scripts/schedule-tick.sh >> /var/log/wactl-schedule.log 2>&1" > /etc/cron.d/wactl-schedules

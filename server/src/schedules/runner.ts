@@ -163,7 +163,15 @@ export interface ClaudeResult {
   error?: string;
 }
 
-/** The only impure part: spawn `claude -p` and parse its JSON envelope. */
+/**
+ * The only impure part: spawn `claude -p` and parse its JSON envelope.
+ *
+ * Auth: the spawned process inherits our env. When ANTHROPIC_API_KEY is set
+ * (the supported method — schedule-run.sh injects it from the instance .env),
+ * claude uses it and it takes precedence over any ambient claude.ai login. When
+ * unset, claude falls back to whatever login exists — convenient for dev, but
+ * production installs set the key.
+ */
 export function runClaude(args: {
   schedule: Schedule;
   isNew: boolean;

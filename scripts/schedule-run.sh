@@ -27,6 +27,8 @@ get() { grep -E "^$1=" "$ENV_FILE" | head -1 | cut -d= -f2-; }
 DATA_DIR="$(get DATA_DIR)"
 MCP_PORT="$(get MCP_PORT)"
 MCP_API_KEY="$(get MCP_API_KEY)"
+ANTHROPIC_API_KEY="$(get ANTHROPIC_API_KEY)"   # runner auth: key takes precedence over any login
+SCHEDULE_COMPACT_TOKEN_THRESHOLD="$(get SCHEDULE_COMPACT_TOKEN_THRESHOLD)"
 NTFY_TOPIC="$(get NTFY_TOPIC)"
 NTFY_SERVER="$(get NTFY_SERVER)"; NTFY_SERVER="${NTFY_SERVER:-https://ntfy.sh}"
 
@@ -49,6 +51,20 @@ if ! command -v "$CLAUDE_BIN" >/dev/null 2>&1; then
   echo "claude CLI not found" >&2; exit 1
 fi
 
+# Runner auth: pass ANTHROPIC_API_KEY (the supported method) into the run env only
+# when set — an empty value would make claude treat auth as configured-but-invalid.
+# When unset, claude falls back to whatever ambient login exists (dev convenience).
+run_env=(
+  DATA_DIR="$DATA_DIR"
+  MCP_PORT="$MCP_PORT"
+  MCP_API_KEY="$MCP_API_KEY"
+  CLAUDE_BIN="$CLAUDE_BIN"
+  SCHEDULE_COMPACT_TOKEN_THRESHOLD="${SCHEDULE_COMPACT_TOKEN_THRESHOLD:-450000}"
+)
+if [ -n "$ANTHROPIC_API_KEY" ]; then
+  run_env+=(ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY")
+fi
+
 # Drop to the wactl user if it exists and we aren't already it.
 sudo_prefix=()
 if [ "$(id -un)" != "$RUN_AS" ] && id "$RUN_AS" >/dev/null 2>&1; then
@@ -56,12 +72,7 @@ if [ "$(id -un)" != "$RUN_AS" ] && id "$RUN_AS" >/dev/null 2>&1; then
 fi
 
 # flock -w 300: bounded wait so a hung run can't wedge the schedule forever.
-if ! "${sudo_prefix[@]}" env \
-      DATA_DIR="$DATA_DIR" \
-      MCP_PORT="$MCP_PORT" \
-      MCP_API_KEY="$MCP_API_KEY" \
-      CLAUDE_BIN="$CLAUDE_BIN" \
-      SCHEDULE_COMPACT_TOKEN_THRESHOLD="${SCHEDULE_COMPACT_TOKEN_THRESHOLD:-450000}" \
+if ! "${sudo_prefix[@]}" env "${run_env[@]}" \
       flock -w 300 "$LOCK" \
       node "$RUNNER" "$DATA_DIR" "$slug" "$event" ${payload:+"$payload"}; then
   notify "schedule '$slug' run failed ($event) — check log.md; a message may or may not have been sent"
