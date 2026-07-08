@@ -1,6 +1,7 @@
 # wactl — Scheduled Messages (Telegram-driven) — Design Spec
 
-Status: **Draft**
+Status: **Implemented** (all 6 phases built + unit-tested; live Telegram/WhatsApp
+verification pending operator setup — see docs/scheduled-messages-setup.md)
 Target branch: `feat/scheduled-messages` (off `main`)
 Author: Dhruv
 Last updated: 2026-07-08 (hardened after a 6-agent codebase analysis pass)
@@ -611,18 +612,16 @@ docs/scheduled-messages-setup.md"* when `TELEGRAM_*` is blank.
    store: `watchMatches` / `activeWatches` / `advanceWatchSince`. 15 watch unit
    checks green; no Go change used (JID match suffices given bridge
    normalization). Live verification pending a bot + real inbound.
-6. **Install + docs** — install the `claude` CLI + document setting
-   `ANTHROPIC_API_KEY` in the instance `.env` + runner preflight;
-   `wactl-<name>-telegram` unit in the instance block
-   (+ teardown in `--remove`); the shared cron line; new `.env` keys (blank);
-   **a server-code upgrade path** (`install.sh --upgrade` / `scripts/upgrade.sh`
-   that git-pulls + rebuilds bridge **and** server + redeploys units/cron —
-   `update-check.sh` only rebuilds the Go bridge); README tool count (7 → **21**)
-   + the ten `schedule_*` rows; **strip the
-   README's phantom `wactl` CLI advertising** (install.sh never installs it —
-   no CLI surface anywhere); Docker-unsupported line; MAINTENANCE.md ops;
-   `docs/scheduled-messages-setup.md` (BotFather → forum supergroup → bot admin +
-   Manage Topics → discovering group-id + user-ids).
+6. **Install + docs** — ✅ **DONE**. `install.sh` resolves `claude`'s path into
+   each `.env` as `CLAUDE_BIN` + enhanced preflight (system-wide install hint);
+   `scripts/upgrade.sh` (git-pull + rebuild bridge **and** server + restart all
+   instances — the gap `update-check.sh` left); README updated (tool count
+   7→11 WhatsApp + the nine user-facing `schedule_*` tools, Scheduled Messages
+   feature row + section, architecture diagram, **phantom `wactl` CLI stripped**,
+   Docker-unsupported note); `docs/scheduled-messages-setup.md` (BotFather →
+   forum group → bot admin/Manage Topics → group-id/user-id discovery → `.env` →
+   go-live). `wactl-<name>-telegram` unit + teardown and the shared cron line
+   were wired in Phases 4–5.
 
 ## 17. Decisions & remaining open questions
 

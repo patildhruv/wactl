@@ -12,7 +12,6 @@ set -euo pipefail
 
 INSTALL_DIR="${INSTALL_DIR:-/opt/wactl}"
 RUN_AS="${SCHEDULE_RUN_AS:-wactl}"
-CLAUDE_BIN="${CLAUDE_BIN:-claude}"
 
 instance="${1:?usage: schedule-run.sh <instance> <slug> <event> [payloadFile]}"
 slug="${2:?slug required}"
@@ -30,6 +29,7 @@ MCP_API_KEY="$(get MCP_API_KEY)"
 BRIDGE_PORT="$(get BRIDGE_PORT)"               # watch runs read inbound from the bridge
 ANTHROPIC_API_KEY="$(get ANTHROPIC_API_KEY)"   # runner auth: key takes precedence over any login
 SCHEDULE_COMPACT_TOKEN_THRESHOLD="$(get SCHEDULE_COMPACT_TOKEN_THRESHOLD)"
+CLAUDE_BIN="$(get CLAUDE_BIN)"; CLAUDE_BIN="${CLAUDE_BIN:-claude}"  # abs path (wactl user may lack root's PATH)
 NTFY_TOPIC="$(get NTFY_TOPIC)"
 NTFY_SERVER="$(get NTFY_SERVER)"; NTFY_SERVER="${NTFY_SERVER:-https://ntfy.sh}"
 

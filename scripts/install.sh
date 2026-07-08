@@ -496,6 +496,7 @@ TELEGRAM_GROUP_ID=
 TELEGRAM_ALLOWED_USER_IDS=
 SCHEDULE_COMPACT_TOKEN_THRESHOLD=450000
 SCHEDULE_DEFAULT_MODEL=sonnet[1m]
+CLAUDE_BIN=$(command -v claude 2>/dev/null || echo claude)
 EOF
 
 # Create systemd services
@@ -629,10 +630,12 @@ if [ "$FIRST_RUN" = true ]; then
   fi
   # The claude CLI is a runtime prerequisite; auth is via ANTHROPIC_API_KEY set in
   # each instance's .env (the key takes precedence over any login). Warn if the
-  # CLI is missing; the key itself is checked per-instance below.
+  # CLI is missing. It must be reachable by the unprivileged 'wactl' user, so a
+  # system-wide install (not a per-user ~/.local) is recommended.
   if ! command -v claude >/dev/null 2>&1; then
-    echo "  [!] Scheduled Messages needs the 'claude' CLI installed on the host."
-    echo "      Install Claude Code, then set ANTHROPIC_API_KEY in the instance .env."
+    echo "  [!] Scheduled Messages needs the 'claude' CLI on the host (reachable by the 'wactl' user)."
+    echo "      Install:  curl -fsSL https://claude.ai/install.sh | sudo bash   # or: npm i -g @anthropic-ai/claude-code"
+    echo "      Then set ANTHROPIC_API_KEY in the instance .env and see docs/scheduled-messages-setup.md."
   fi
   # A single shared tick dispatches due schedules across every instance.
   echo "* * * * * root /opt/wactl/scripts/schedule-tick.sh >> /var/log/wactl-schedule.log 2>&1" > /etc/cron.d/wactl-schedules
