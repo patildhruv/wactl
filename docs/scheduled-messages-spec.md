@@ -588,9 +588,18 @@ docs/scheduled-messages-setup.md"* when `TELEGRAM_*` is blank.
    executes — server never spawns claude). **Live end-to-end proof:** a fact
    planted in one session was folded into context.md by `/compact` and recalled
    by the fresh rotated session. 10 rotation unit checks + due-precedence green.
-4. **`wactl-telegram` service** — raw-https Bot API long-poll; topic
-   reconciliation (create/backfill/close); slash commands; fail-closed
-   allowlist; natural-language → session; owns all outbound topic posts.
+4. **`wactl-telegram` service** — ✅ **DONE** (built + unit-tested; live
+   verification pending a bot token). `telegram/api.ts` (raw-https Bot API:
+   getUpdates long-poll, sendMessage, forum-topic create/edit/close),
+   `telegram/commands.ts` (pure: fail-closed authz, command parse, update
+   routing — 25 checks), `telegram/handlers.ts` (full command surface against
+   the real store; store commands instant, `/runnow` + free-text return a
+   RunRequest — 30 checks), `telegram/service.ts` (long-poll loop, topic
+   reconciliation incl. backfilling schedules created from Claude.ai, `/new`
+   `/list` `/delete`, invokes `schedule-run.sh` and posts the agent's reply).
+   Runner CLI now emits `reply` for the service to post. Per-instance
+   `wactl-<name>-telegram` systemd unit (User=wactl, idles when unconfigured) +
+   teardown in `--remove`.
 5. **Watch mode** — `message` branch in `/bridge/events` (+ optional msg-id
    payload) with canonical-identity match; since-based poll backstop in the tick.
 6. **Install + docs** — install the `claude` CLI + document setting

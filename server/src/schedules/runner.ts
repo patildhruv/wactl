@@ -341,7 +341,8 @@ if (require.main === module) {
       console.log(JSON.stringify({ ok: true, mode: event, newSessionId: r.newSessionId, archivedTo: r.archivedTo }));
     } else {
       const r = runOnce(dataDir, slug, event, payload);
-      console.log(JSON.stringify({ ok: true, sessionId: r.sessionId, tokens: r.inputTokens }));
+      // `reply` is the agent's text — the telegram service posts it back to the topic.
+      console.log(JSON.stringify({ ok: true, sessionId: r.sessionId, tokens: r.inputTokens, reply: r.result }));
     }
   } catch (e) {
     console.error(String((e as Error).message));

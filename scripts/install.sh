@@ -200,10 +200,11 @@ if [ "$REMOVE" = true ]; then
 
   # Stop and disable services
   echo "[1/4] Stopping services..."
-  systemctl stop "wactl-${NAME}-bridge" "wactl-${NAME}-server" 2>/dev/null || true
-  systemctl disable "wactl-${NAME}-bridge" "wactl-${NAME}-server" 2>/dev/null || true
+  systemctl stop "wactl-${NAME}-bridge" "wactl-${NAME}-server" "wactl-${NAME}-telegram" 2>/dev/null || true
+  systemctl disable "wactl-${NAME}-bridge" "wactl-${NAME}-server" "wactl-${NAME}-telegram" 2>/dev/null || true
   rm -f "/etc/systemd/system/wactl-${NAME}-bridge.service"
   rm -f "/etc/systemd/system/wactl-${NAME}-server.service"
+  rm -f "/etc/systemd/system/wactl-${NAME}-telegram.service"
   systemctl daemon-reload
 
   # Remove from instances.json
@@ -537,6 +538,31 @@ EnvironmentFile=$INSTANCE_DIR/.env
 WantedBy=multi-user.target
 EOF
 
+# wactl-telegram: per-instance bot service (Scheduled Messages control surface).
+# Runs as the unprivileged wactl user (same user the runner uses). Idles when
+# TELEGRAM_BOT_TOKEN is unset, so it's safe to enable before the operator
+# configures a bot.
+cat > "/etc/systemd/system/wactl-${NAME}-telegram.service" << EOF
+[Unit]
+Description=wactl Telegram Bot ($NAME)
+After=wactl-${NAME}-server.service
+Wants=wactl-${NAME}-server.service
+
+[Service]
+Type=simple
+User=wactl
+WorkingDirectory=$INSTALL_DIR/server
+ExecStart=/usr/bin/node $INSTALL_DIR/server/dist/telegram/service.js
+Restart=always
+RestartSec=10
+EnvironmentFile=$INSTANCE_DIR/.env
+Environment=INSTANCE_NAME=$NAME
+Environment=INSTALL_DIR=$INSTALL_DIR
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
 # Update instance registry and Caddyfile
 if [ "$FIRST_RUN" = true ]; then
   echo "[${STEP_REGISTRY}/${TOTAL_STEPS}] Initializing instance registry..."
@@ -637,8 +663,10 @@ fi
 # Start services
 echo "[${STEP_START}/${TOTAL_STEPS}] Starting services..."
 systemctl daemon-reload
-systemctl enable "wactl-${NAME}-bridge" "wactl-${NAME}-server" > /dev/null 2>&1
+systemctl enable "wactl-${NAME}-bridge" "wactl-${NAME}-server" "wactl-${NAME}-telegram" > /dev/null 2>&1
 systemctl start "wactl-${NAME}-bridge" "wactl-${NAME}-server"
+# telegram unit only starts cleanly once wactl user + build exist; start best-effort
+systemctl start "wactl-${NAME}-telegram" 2>/dev/null || true
 
 # Verify services started
 sleep 2

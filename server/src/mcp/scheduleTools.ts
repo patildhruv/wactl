@@ -15,8 +15,8 @@ import {
   appendLog,
   validateModel,
   setContext,
-  ResolvedRecipient,
 } from "../schedules/store";
+import { resolveRecipient } from "../schedules/recipient";
 
 /**
  * The context.md contract. Presented to callers so they author memory in the
@@ -55,30 +55,6 @@ const CONTEXT_TEMPLATE = `# <slug>
  * against a per-run token + per-run/per-day caps — none of which the LLM can
  * override (spec §13.1).
  */
-
-/** Resolve a phone / JID / contact-name into a canonical identity + JID. */
-async function resolveRecipient(
-  bridge: BridgeClient,
-  to: string
-): Promise<ResolvedRecipient> {
-  const looksAddressable = to.includes("@") || /^[0-9+\s-]+$/.test(to);
-  if (looksAddressable) {
-    try {
-      const m = await bridge.resolveJid(to.replace(/[\s-]/g, ""));
-      return { identity: m.phone || m.user, jid: m.jid };
-    } catch {
-      // fall through to contact search
-    }
-  }
-  const contacts = await bridge.getContacts(to);
-  if (contacts.length > 0) {
-    const c = contacts[0];
-    return { identity: c.number || c.id.split("@")[0], jid: c.id };
-  }
-  throw new Error(
-    `could not resolve recipient '${to}' — pass a phone number, a full JID, or a saved contact name`
-  );
-}
 
 function summarize(s: ReturnType<typeof getSchedule>) {
   return {

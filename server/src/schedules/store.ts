@@ -18,6 +18,8 @@ import path from "path";
 import crypto from "crypto";
 import { v4 as uuidv4 } from "uuid";
 import { Schedule, SendState, ScheduleWatch, CreateScheduleInput } from "./types";
+import type { ResolvedRecipient } from "./recipient";
+export type { ResolvedRecipient };
 
 const DEFAULT_MODEL = process.env.SCHEDULE_DEFAULT_MODEL || "sonnet[1m]";
 // >=1M-context allowlist (spec §17). Concrete ids are pinned via env at deploy
@@ -139,11 +141,6 @@ ${schedule.goal}
 }
 
 // --- CRUD ------------------------------------------------------------------
-
-export interface ResolvedRecipient {
-  identity: string;
-  jid: string;
-}
 
 /**
  * Create a schedule folder: schedule.json (atomic), seeded context.md, an empty
