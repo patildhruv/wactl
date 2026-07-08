@@ -21,11 +21,12 @@ for inst in $(jq -r '.instances | keys[]' "$INSTANCES"); do
   [ -n "$data_dir" ] || continue
   [ -d "$data_dir/schedules" ] || continue
 
-  # Fire each due schedule in the background; per-schedule flock (in the runner)
-  # prevents overlap of the SAME schedule across ticks.
-  while IFS= read -r slug; do
+  # due.js emits "<event> <slug>" (event ∈ cron|compact|reset). Fire each in the
+  # background; per-schedule flock (in the runner) prevents overlap of the SAME
+  # schedule across ticks.
+  while read -r event slug; do
     [ -n "$slug" ] || continue
-    "$INSTALL_DIR/scripts/schedule-run.sh" "$inst" "$slug" cron >/dev/null 2>&1 &
+    "$INSTALL_DIR/scripts/schedule-run.sh" "$inst" "$slug" "$event" >/dev/null 2>&1 &
   done < <(node "$DUE" "$data_dir" 2>/dev/null)
 done
 

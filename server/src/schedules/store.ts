@@ -13,6 +13,7 @@
  */
 
 import fs from "fs";
+import os from "os";
 import path from "path";
 import crypto from "crypto";
 import { v4 as uuidv4 } from "uuid";
@@ -301,6 +302,33 @@ export function clearTrigger(slug: string): void {
   if (fs.existsSync(p)) fs.rmSync(p);
 }
 
+/**
+ * Request a session rotation (compact/reset) out-of-band. Drops a sentinel the
+ * cron tick picks up and hands to the runner — the server process never spawns
+ * claude itself (spec §7.2: the orchestrator owns rotation, off the request
+ * path). Returns immediately.
+ */
+export function requestRotation(slug: string, mode: "compact" | "reset"): void {
+  if (!fs.existsSync(scheduleDir(slug))) throw new Error(`no such schedule: ${slug}`);
+  fs.writeFileSync(path.join(scheduleDir(slug), `.${mode}`), String(nowSec()));
+}
+
+/** Which rotation the tick should run for this schedule, if any (compact wins). */
+export function pendingRotation(slug: string): "compact" | "reset" | null {
+  const dir = scheduleDir(slug);
+  if (fs.existsSync(path.join(dir, ".compact"))) return "compact";
+  if (fs.existsSync(path.join(dir, ".reset"))) return "reset";
+  return null;
+}
+
+/** Consume both rotation sentinels. Called by the runner once it acts. */
+export function clearRotation(slug: string): void {
+  for (const m of [".compact", ".reset"]) {
+    const p = path.join(scheduleDir(slug), m);
+    if (fs.existsSync(p)) fs.rmSync(p);
+  }
+}
+
 /** Directory a run should cwd into — the schedule's own folder (session binding + confinement). */
 export function scheduleCwd(slug: string): string {
   return scheduleDir(slug);
@@ -318,6 +346,53 @@ export function logFile(slug: string): string {
 export function currentContextHash(slug: string): string {
   const p = contextPath(slug);
   return fs.existsSync(p) ? sha256File(p) : "";
+}
+
+// --- Session rotation (spec §7.2 / §7.3) -----------------------------------
+
+/**
+ * Claude Code's per-project transcript dir: CLAUDE_CONFIG_DIR (or ~/.claude)
+ * + /projects/<cwd with every non-alphanumeric char turned into '-'>.
+ */
+export function claudeProjectDir(cwd: string): string {
+  const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude");
+  const key = cwd.replace(/[^a-zA-Z0-9]/g, "-");
+  return path.join(configDir, "projects", key);
+}
+
+function liveTranscriptPath(slug: string, sessionId: string): string {
+  return path.join(claudeProjectDir(scheduleDir(slug)), `${sessionId}.jsonl`);
+}
+
+export interface RotateResult {
+  oldSessionId: string;
+  newSessionId: string;
+  archivedTo: string | null;
+}
+
+/**
+ * Archive the current session transcript and mint a fresh session id. The new
+ * session has no transcript yet, so `sessionStarted=false` → the next run reads
+ * context.md and continuity flows through the durable memory (spec §7.3 step 2-3
+ * and step 5). Does NOT run the compaction turn — that's the runner's job
+ * (needs to invoke claude); this is the pure state transition.
+ */
+export function rotateSession(slug: string): RotateResult {
+  const schedule = getSchedule(slug);
+  const oldSessionId = schedule.sessionId;
+
+  let archivedTo: string | null = null;
+  const live = liveTranscriptPath(slug, oldSessionId);
+  if (fs.existsSync(live)) {
+    const dest = path.join(scheduleDir(slug), "sessions", "archive", `${oldSessionId}-${nowSec()}.jsonl`);
+    fs.mkdirSync(path.dirname(dest), { recursive: true, mode: 0o2770 });
+    fs.copyFileSync(live, dest);
+    archivedTo = dest;
+  }
+
+  const newSessionId = uuidv4();
+  updateSchedule(slug, { sessionId: newSessionId, sessionStarted: false });
+  return { oldSessionId, newSessionId, archivedTo };
 }
 
 // --- Send enforcement (spec §13.1) -----------------------------------------

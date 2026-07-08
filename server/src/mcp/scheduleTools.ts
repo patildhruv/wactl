@@ -10,6 +10,7 @@ import {
   updateSchedule,
   deleteSchedule,
   requestRunNow,
+  requestRotation,
   authorizeSend,
   appendLog,
   validateModel,
@@ -292,6 +293,34 @@ Returns: { ok: true }`,
     handler: async (_bridge, args: { slug: string }) => {
       requestRunNow(args.slug);
       return { ok: true };
+    },
+  },
+
+  {
+    name: "schedule_compact",
+    description: `Compact a schedule's session: on the next tick, the agent runs one final turn to fold everything durable into context.md, then its live session is archived and a fresh one is started. Use when a session has grown large (see schedule_get → run log token warnings) — memory is preserved via context.md, tokens are freed.
+
+Parameters:
+  slug (string, required).
+Returns: { ok: true, mode: "compact" } — the rotation runs asynchronously on the next tick.`,
+    schema: { slug: z.string().describe("Schedule handle (slug)") },
+    handler: async (_bridge, args: { slug: string }) => {
+      requestRotation(args.slug, "compact");
+      return { ok: true, mode: "compact" };
+    },
+  },
+
+  {
+    name: "schedule_reset",
+    description: `Hard-reset a schedule's session: archive the live session and start fresh from the EXISTING context.md WITHOUT a memory-flush turn. Unlike schedule_compact, anything only in the live session (not yet written to context.md) is discarded. Use to clear a confused/derailed session.
+
+Parameters:
+  slug (string, required).
+Returns: { ok: true, mode: "reset" } — runs asynchronously on the next tick.`,
+    schema: { slug: z.string().describe("Schedule handle (slug)") },
+    handler: async (_bridge, args: { slug: string }) => {
+      requestRotation(args.slug, "reset");
+      return { ok: true, mode: "reset" };
     },
   },
 

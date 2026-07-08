@@ -25,8 +25,11 @@ import {
   beginRun,
   appendLog,
   clearTrigger,
+  clearRotation,
   scheduleCwd,
   currentContextHash,
+  rotateSession,
+  RotateResult,
 } from "./store";
 
 const CEILING = parseInt(process.env.SCHEDULE_COMPACT_TOKEN_THRESHOLD || "450000", 10);
@@ -60,6 +63,14 @@ export function selectTools(schedule: Schedule): string[] {
 
 const UNTRUSTED_OPEN = "<<<UNTRUSTED_WHATSAPP_DATA>>>";
 const UNTRUSTED_CLOSE = "<<<END_UNTRUSTED_WHATSAPP_DATA>>>";
+
+/** The fixed compaction turn (spec §7.3 step 1). Constant so it's tunable in one place. */
+export const COMPACTION_PROMPT =
+  "Before this session is retired, rewrite context.md to fully capture the durable " +
+  "state of this schedule — Person, Objective, Approach & psychology, History, " +
+  "Pending, and Standing instructions. context.md is the ONLY memory that survives " +
+  "into the next session, so fold in anything important from our conversation that " +
+  "isn't already written down. Then reply with just 'compacted'.";
 
 export interface PromptOpts {
   schedule: Schedule;
@@ -232,14 +243,80 @@ export function runOnce(dataDir: string, slug: string, event: string, payload?: 
       contextHash: currentContextHash(slug), // session is now in sync with context.md
     });
 
-    if (result.inputTokens && result.inputTokens >= CEILING) {
-      appendLog(slug, `⚠️ session at ${result.inputTokens} input tokens (ceiling ${CEILING}) — compaction recommended`);
-    }
     appendLog(slug, `run ok (${event}) session=${result.sessionId ?? schedule.sessionId} tokens=${result.inputTokens ?? "?"}`);
+
+    // Safety ceiling (spec §7.2): if the session has grown past the threshold,
+    // force a compaction NOW rather than let Claude Code's own internal
+    // auto-compaction fire and summarize into the session instead of context.md.
+    // Skip for compact/reset events (they ARE the rotation) to avoid recursion.
+    if (
+      event !== "compact" &&
+      event !== "reset" &&
+      result.inputTokens &&
+      result.inputTokens >= CEILING
+    ) {
+      appendLog(slug, `⚠️ session at ${result.inputTokens} tokens ≥ ceiling ${CEILING} — forcing compaction`);
+      try {
+        const rot = compact(dataDir, slug);
+        appendLog(slug, `↻ auto-compacted at ceiling → new session ${rot.newSessionId}`);
+      } catch (e) {
+        appendLog(slug, `auto-compaction FAILED: ${(e as Error).message} — will retry next run`);
+      }
+    }
     return result;
   } finally {
     mcp.cleanup();
   }
+}
+
+export interface CompactResult extends RotateResult {
+  compactionRan: boolean;
+}
+
+/**
+ * Compact a schedule (spec §7.3): run one final turn asking the agent to fold
+ * everything durable into context.md, then archive the transcript and mint a
+ * fresh session. `reset` skips the final turn (hard reset from existing
+ * context.md). The orchestrator owns this — a session can't rotate itself.
+ */
+export function compact(dataDir: string, slug: string, mode: "compact" | "reset" = "compact"): CompactResult {
+  process.env.DATA_DIR = dataDir;
+  clearRotation(slug); // consume any pending .compact/.reset sentinel
+  const schedule = getSchedule(slug);
+  let compactionRan = false;
+
+  // Only run the memory-flush turn if there's a live session and we're compacting.
+  if (mode === "compact" && schedule.sessionStarted) {
+    const mcpPort = process.env.MCP_PORT || "3000";
+    const apiKey = process.env.MCP_API_KEY || "";
+    const mcp = writeMcpConfig(mcpPort, apiKey);
+    try {
+      const result = runClaude({
+        schedule,
+        isNew: false, // resume the session we're about to retire
+        prompt: COMPACTION_PROMPT,
+        mcpConfigPath: mcp.path,
+        allowedTools: ["Read", "Edit"], // memory-only; never sends during compaction
+        cwd: scheduleCwd(slug),
+      });
+      if (!result.ok) {
+        appendLog(slug, `compaction turn FAILED: ${result.error} — rotating anyway to stay under the window`);
+      } else {
+        compactionRan = true;
+        // Session is in sync with the freshly-written context.md.
+        updateSchedule(slug, { contextHash: currentContextHash(slug) });
+      }
+    } finally {
+      mcp.cleanup();
+    }
+  }
+
+  const rot = rotateSession(slug);
+  appendLog(
+    slug,
+    `${mode} → archived ${rot.oldSessionId}${rot.archivedTo ? "" : " (no live transcript)"}, new session ${rot.newSessionId}`
+  );
+  return { ...rot, compactionRan };
 }
 
 // CLI: node runner.js <dataDir> <slug> <event> [payloadFile]
@@ -251,8 +328,13 @@ if (require.main === module) {
   }
   const payload = payloadFile && fs.existsSync(payloadFile) ? fs.readFileSync(payloadFile, "utf-8") : undefined;
   try {
-    const r = runOnce(dataDir, slug, event, payload);
-    console.log(JSON.stringify({ ok: true, sessionId: r.sessionId, tokens: r.inputTokens }));
+    if (event === "compact" || event === "reset") {
+      const r = compact(dataDir, slug, event);
+      console.log(JSON.stringify({ ok: true, mode: event, newSessionId: r.newSessionId, archivedTo: r.archivedTo }));
+    } else {
+      const r = runOnce(dataDir, slug, event, payload);
+      console.log(JSON.stringify({ ok: true, sessionId: r.sessionId, tokens: r.inputTokens }));
+    }
   } catch (e) {
     console.error(String((e as Error).message));
     process.exit(1);

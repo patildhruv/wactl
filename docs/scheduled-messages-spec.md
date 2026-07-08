@@ -185,6 +185,8 @@ missing one.
 | `schedule_update` | `slug`, any field incl. `enabled` | patch schedule.json |
 | `schedule_delete` | `slug` | archive folder + close Telegram topic |
 | `schedule_run_now` | `slug` | drop a `.trigger` file the tick picks up next minute |
+| `schedule_compact` | `slug` | request compaction (memory-flush turn → archive → new session) via sentinel |
+| `schedule_reset` | `slug` | request hard reset (archive → new session from existing context.md, no flush turn) |
 
 `dryRun` **defaults true** — a new schedule never DMs anyone until explicitly
 flipped (`/dryrun off` or `schedule_update`).
@@ -574,8 +576,15 @@ docs/scheduled-messages-setup.md"* when `TELEGRAM_*` is blank.
    recalled from session history alone). 29 + 31 unit checks green.
    Still TODO in Phase 2 hardening: `Read`/`Edit` deny-hook to *confine* (not
    just localize) file access to the schedule dir.
-3. **Session lifecycle** — seeding rule, hash-based re-read, safety-ceiling +
-   `/compact` rotation, archive.
+3. **Session lifecycle** — ✅ **DONE**. `store.rotateSession` (archive live
+   transcript → mint new session → `sessionStarted=false`) + `runner.compact`
+   (`compact` runs the fixed memory-flush turn first; `reset` skips it); the
+   safety ceiling now **auto-compacts** at the threshold instead of only warning;
+   claudeProjectDir derivation; out-of-band rotation via `.compact`/`.reset`
+   sentinels (`schedule_compact`/`schedule_reset` MCP tools drop them, the tick
+   executes — server never spawns claude). **Live end-to-end proof:** a fact
+   planted in one session was folded into context.md by `/compact` and recalled
+   by the fresh rotated session. 10 rotation unit checks + due-precedence green.
 4. **`wactl-telegram` service** — raw-https Bot API long-poll; topic
    reconciliation (create/backfill/close); slash commands; fail-closed
    allowlist; natural-language → session; owns all outbound topic posts.
@@ -586,8 +595,8 @@ docs/scheduled-messages-setup.md"* when `TELEGRAM_*` is blank.
    (+ teardown in `--remove`); the shared cron line; new `.env` keys (blank);
    **a server-code upgrade path** (`install.sh --upgrade` / `scripts/upgrade.sh`
    that git-pulls + rebuilds bridge **and** server + redeploys units/cron —
-   `update-check.sh` only rebuilds the Go bridge); README tool count (7 → **19**)
-   + the eight `schedule_*` rows; **strip the
+   `update-check.sh` only rebuilds the Go bridge); README tool count (7 → **21**)
+   + the ten `schedule_*` rows; **strip the
    README's phantom `wactl` CLI advertising** (install.sh never installs it —
    no CLI surface anywhere); Docker-unsupported line; MAINTENANCE.md ops;
    `docs/scheduled-messages-setup.md` (BotFather → forum supergroup → bot admin +
