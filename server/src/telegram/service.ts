@@ -67,8 +67,12 @@ async function main() {
   });
   log(`connected as @${(me as any).username} — group ${groupId}, ${allowedUserIds.length} allowed user(s)`);
 
-  // Register the slash-command menu (autocomplete on "/") + profile blurb.
-  await tg.setMyCommands(BOT_COMMANDS).catch((e) => log("setMyCommands failed:", String(e)));
+  // Register the slash-command menu (autocomplete on "/") for every scope where
+  // we operate — default (private), all group chats, and THIS group specifically
+  // (the specific-chat scope is the most reliable for a forum group).
+  for (const scope of [undefined, { type: "all_group_chats" }, { type: "chat", chat_id: groupId }]) {
+    await tg.setMyCommands(BOT_COMMANDS, scope).catch((e) => log("setMyCommands failed:", String(e)));
+  }
   await tg.setMyShortDescription("Schedule context-aware WhatsApp messages — one topic per schedule.").catch(() => {});
 
   await reconcileTopics(tg, groupId).catch((e) => log("initial topic reconcile failed:", String(e)));

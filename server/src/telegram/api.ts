@@ -112,9 +112,18 @@ export class TelegramClient {
     return this.call<boolean>("sendChatAction", params).catch(() => false);
   }
 
-  /** Register the command menu (autocomplete on "/"). */
-  setMyCommands(commands: { command: string; description: string }[]): Promise<boolean> {
-    return this.call<boolean>("setMyCommands", { commands });
+  /**
+   * Register the command menu (autocomplete on "/"). Pass a scope to control
+   * WHERE it shows — the default scope only surfaces in private chats, so groups
+   * need `all_group_chats` and/or a specific `{type:"chat",chat_id}` scope.
+   */
+  setMyCommands(
+    commands: { command: string; description: string }[],
+    scope?: Record<string, unknown>
+  ): Promise<boolean> {
+    const params: Record<string, unknown> = { commands };
+    if (scope) params.scope = scope;
+    return this.call<boolean>("setMyCommands", params);
   }
 
   setMyDescription(description: string): Promise<boolean> {
