@@ -521,13 +521,23 @@ able to steer it. Mitigations, in priority order:
   cron, no systemd, no `claude` CLI) — state this in README + MAINTENANCE.
 - The dedicated `wactl` user exists for **privilege isolation** (the LLM must not
   run as root, §13.2) — no longer for credential-per-user reasons.
-- **Headless Claude auth = `ANTHROPIC_API_KEY`** (implemented). The runner reads
-  it from the instance `.env` and injects it into the run env
-  (`schedule-run.sh`); a set key **takes precedence over any ambient claude.ai
-  login** (verified — no `--bare` needed, so Claude Code hooks stay available for
-  the Read/Edit confinement work). This sidesteps the old "cron-root vs
-  per-user-login" wrinkle entirely: no per-user `claude login`, no
-  `~/.claude/.credentials.json` juggling, no `CLAUDE_CONFIG_DIR`.
+- **Headless Claude auth** (implemented) — the runner reads credentials from the
+  instance `.env` and injects them into the run env (`schedule-run.sh`); they
+  take precedence over any ambient claude.ai login (no `--bare` needed, so hooks
+  stay available for the Read/Edit confinement work). Two supported shapes:
+  - **Direct Anthropic:** `ANTHROPIC_API_KEY`.
+  - **Gateway (Azure AI Foundry — the deployed path):**
+    `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` (Bearer). Foundry exposes the
+    real Anthropic Messages API (`…/anthropic/v1/messages`), so Claude Code
+    points straight at it — sessions/`--resume`/tools all work, **verified live**
+    (connectivity, resume, and the full runner path with `claude-opus-4-8`).
+    **Gotcha, handled:** Claude Code otherwise sends an
+    `anthropic-beta: advisor-tool-…` header Azure rejects with a 400; the runner
+    always sets `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, which strips it.
+  - Model: `SCHEDULE_DEFAULT_MODEL` / `SCHEDULE_MODEL_ALLOWLIST` =
+    `claude-opus-4-8` (the Foundry deployment name; confirmed 1M context, so the
+    450k ceiling stands). This sidesteps the old "cron-root vs per-user-login"
+    wrinkle entirely.
   - The key ships **blank** in the `.env`; when blank the runner passes no key
     and claude falls back to whatever ambient login exists (dev convenience) —
     but a production install sets the key. An OAuth/subscription login remains a
@@ -550,12 +560,18 @@ config table too.
 
 ```
 # blank by default — Scheduled Messages stays dormant until filled
-ANTHROPIC_API_KEY=                # runner auth (supported method); takes precedence over any login
+# Runner auth: EITHER a direct key OR a gateway (base-url + auth-token). Gateway wins.
+ANTHROPIC_API_KEY=                # direct Anthropic
+ANTHROPIC_BASE_URL=               # gateway, e.g. https://<res>.services.ai.azure.com/anthropic
+ANTHROPIC_AUTH_TOKEN=             # Bearer token for the gateway (Azure Foundry key)
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_GROUP_ID=                # -100…
 TELEGRAM_ALLOWED_USER_IDS=        # comma-separated; EMPTY = deny all (fail-closed)
-SCHEDULE_COMPACT_TOKEN_THRESHOLD=450000   # safety ceiling; all allowed models are >=1M context
-SCHEDULE_DEFAULT_MODEL=sonnet[1m]         # per-schedule override via /model; must be >=1M context
+SCHEDULE_COMPACT_TOKEN_THRESHOLD=450000   # safety ceiling; allowed models are >=1M context
+SCHEDULE_DEFAULT_MODEL=claude-opus-4-8    # per-schedule override via /model
+SCHEDULE_MODEL_ALLOWLIST=claude-opus-4-8  # comma-separated; /model rejects anything else
+# CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 is forced by the runner (strips the
+# advisor-tool beta header Azure rejects); no need to set it here.
 # (no SCHEDULE_PROJECT_DIR — the runner cwds into each schedule's own folder,
 #  giving per-schedule session binding for free; context.md/log.md are local)
 ```

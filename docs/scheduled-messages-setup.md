@@ -63,15 +63,27 @@ curl -s "https://api.telegram.org/bot<TOKEN>/getUpdates" | jq '.result[].message
 Edit `/opt/wactl/instances/<name>/.env` and fill in:
 
 ```ini
-ANTHROPIC_API_KEY=sk-ant-...           # runner auth (takes precedence over any login)
+# Runner auth — pick ONE:
+#  (a) direct Anthropic:
+ANTHROPIC_API_KEY=sk-ant-...
+#  (b) gateway, e.g. Azure AI Foundry (leave ANTHROPIC_API_KEY blank if using this):
+ANTHROPIC_BASE_URL=https://<resource>.services.ai.azure.com/anthropic
+ANTHROPIC_AUTH_TOKEN=<azure-foundry-key>
+
 TELEGRAM_BOT_TOKEN=123456:ABC-...
 TELEGRAM_GROUP_ID=-1001234567890
 TELEGRAM_ALLOWED_USER_IDS=11111111     # comma-separated for multiple people
 # already present with defaults:
 # SCHEDULE_COMPACT_TOKEN_THRESHOLD=450000
-# SCHEDULE_DEFAULT_MODEL=sonnet[1m]
+# SCHEDULE_DEFAULT_MODEL=claude-opus-4-8
+# SCHEDULE_MODEL_ALLOWLIST=claude-opus-4-8
 # CLAUDE_BIN=/usr/local/bin/claude
 ```
+
+> **Azure AI Foundry**: the deployment must expose the Anthropic Messages API
+> (`…/anthropic/v1/messages`); use the deployment name (e.g. `claude-opus-4-8`)
+> as the model. The runner forces `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`
+> so Claude Code's `advisor-tool` beta header (which Foundry rejects) is dropped.
 
 Then restart the services:
 

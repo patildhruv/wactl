@@ -28,6 +28,8 @@ MCP_PORT="$(get MCP_PORT)"
 MCP_API_KEY="$(get MCP_API_KEY)"
 BRIDGE_PORT="$(get BRIDGE_PORT)"               # watch runs read inbound from the bridge
 ANTHROPIC_API_KEY="$(get ANTHROPIC_API_KEY)"   # runner auth: key takes precedence over any login
+ANTHROPIC_BASE_URL="$(get ANTHROPIC_BASE_URL)" # gateway (e.g. Azure Foundry) — takes precedence when set
+ANTHROPIC_AUTH_TOKEN="$(get ANTHROPIC_AUTH_TOKEN)" # Bearer token for the gateway
 SCHEDULE_COMPACT_TOKEN_THRESHOLD="$(get SCHEDULE_COMPACT_TOKEN_THRESHOLD)"
 CLAUDE_BIN="$(get CLAUDE_BIN)"; CLAUDE_BIN="${CLAUDE_BIN:-claude}"  # abs path (wactl user may lack root's PATH)
 NTFY_TOPIC="$(get NTFY_TOPIC)"
@@ -52,17 +54,27 @@ if ! command -v "$CLAUDE_BIN" >/dev/null 2>&1; then
   echo "claude CLI not found" >&2; exit 1
 fi
 
-# Runner auth: pass ANTHROPIC_API_KEY (the supported method) into the run env only
-# when set — an empty value would make claude treat auth as configured-but-invalid.
-# When unset, claude falls back to whatever ambient login exists (dev convenience).
+# Runner auth. Pass each credential into the run env only when set — an empty
+# value would make claude treat auth as configured-but-invalid. A gateway
+# (ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN, e.g. Azure Foundry) takes
+# precedence; otherwise ANTHROPIC_API_KEY; otherwise ambient login (dev).
+# CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC is always on: it drops the advisor-tool
+# anthropic-beta header that stricter gateways (Azure) reject, and cuts telemetry.
 run_env=(
   DATA_DIR="$DATA_DIR"
   MCP_PORT="$MCP_PORT"
   MCP_API_KEY="$MCP_API_KEY"
   BRIDGE_PORT="${BRIDGE_PORT:-4000}"
   CLAUDE_BIN="$CLAUDE_BIN"
+  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
   SCHEDULE_COMPACT_TOKEN_THRESHOLD="${SCHEDULE_COMPACT_TOKEN_THRESHOLD:-450000}"
 )
+if [ -n "$ANTHROPIC_BASE_URL" ]; then
+  run_env+=(ANTHROPIC_BASE_URL="$ANTHROPIC_BASE_URL")
+fi
+if [ -n "$ANTHROPIC_AUTH_TOKEN" ]; then
+  run_env+=(ANTHROPIC_AUTH_TOKEN="$ANTHROPIC_AUTH_TOKEN")
+fi
 if [ -n "$ANTHROPIC_API_KEY" ]; then
   run_env+=(ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY")
 fi

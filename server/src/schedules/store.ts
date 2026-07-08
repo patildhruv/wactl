@@ -21,7 +21,7 @@ import { Schedule, SendState, ScheduleWatch, CreateScheduleInput } from "./types
 import type { ResolvedRecipient } from "./recipient";
 export type { ResolvedRecipient };
 
-const DEFAULT_MODEL = process.env.SCHEDULE_DEFAULT_MODEL || "sonnet[1m]";
+const DEFAULT_MODEL = process.env.SCHEDULE_DEFAULT_MODEL || "claude-opus-4-8";
 // >=1M-context allowlist (spec §17). Concrete ids are pinned via env at deploy
 // time; default keeps a single safe entry.
 const MODEL_ALLOWLIST = (process.env.SCHEDULE_MODEL_ALLOWLIST || DEFAULT_MODEL)

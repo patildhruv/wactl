@@ -490,12 +490,18 @@ NTFY_SERVER=${NTFY_SERVER}
 SERVER_HOSTNAME=${HOSTNAME}
 AUTO_UPDATE=true
 # --- Scheduled Messages (blank = feature dormant; see docs/scheduled-messages-setup.md) ---
+# Runner auth. Use EITHER a direct Anthropic key (ANTHROPIC_API_KEY) OR a gateway
+# (ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN, e.g. Azure AI Foundry). The base-url
+# path takes precedence when set.
 ANTHROPIC_API_KEY=
+ANTHROPIC_BASE_URL=
+ANTHROPIC_AUTH_TOKEN=
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_GROUP_ID=
 TELEGRAM_ALLOWED_USER_IDS=
 SCHEDULE_COMPACT_TOKEN_THRESHOLD=450000
-SCHEDULE_DEFAULT_MODEL=sonnet[1m]
+SCHEDULE_DEFAULT_MODEL=claude-opus-4-8
+SCHEDULE_MODEL_ALLOWLIST=claude-opus-4-8
 CLAUDE_BIN=$(command -v claude 2>/dev/null || echo claude)
 EOF
 

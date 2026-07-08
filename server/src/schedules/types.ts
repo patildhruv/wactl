@@ -20,7 +20,7 @@ export interface Schedule {
   slug: string;
   /** Current Claude Code session uuid; swapped on compact/reset. */
   sessionId: string;
-  /** Per-schedule model (/model). MUST be in the >=1M-context allowlist. */
+  /** Per-schedule model (/model), e.g. "claude-opus-4-8". MUST be in the allowlist. */
   model: string;
 
   // --- Send target (single pinned recipient; decoupled from watchTarget) ---
