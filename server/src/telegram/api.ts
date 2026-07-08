@@ -8,10 +8,23 @@
  */
 
 import https from "https";
+import fs from "fs";
 
 export interface ForumTopic {
   message_thread_id: number;
   name: string;
+}
+
+export interface PhotoSize {
+  file_id: string;
+  width: number;
+  height: number;
+}
+
+export interface TgDocument {
+  file_id: string;
+  file_name?: string;
+  mime_type?: string;
 }
 
 export interface TgUser {
@@ -28,6 +41,9 @@ export interface TgMessage {
   from?: TgUser;
   chat: { id: number; type: string };
   text?: string;
+  caption?: string;
+  photo?: PhotoSize[];
+  document?: TgDocument;
   reply_to_message?: TgMessage;
 }
 
@@ -144,5 +160,34 @@ export class TelegramClient {
 
   closeForumTopic(chatId: number, threadId: number): Promise<boolean> {
     return this.call<boolean>("closeForumTopic", { chat_id: chatId, message_thread_id: threadId });
+  }
+
+  /** Resolve a file_id to a downloadable file_path. */
+  getFile(fileId: string): Promise<{ file_path: string }> {
+    return this.call<{ file_path: string }>("getFile", { file_id: fileId });
+  }
+
+  /** Download a Telegram file (by its file_path from getFile) to a local dest. */
+  downloadFile(filePath: string, dest: string, timeoutMs = 60000): Promise<void> {
+    const url = `https://api.telegram.org/file/bot${this.token}/${filePath}`;
+    return new Promise((resolve, reject) => {
+      const out = fs.createWriteStream(dest, { mode: 0o600 });
+      const req = https.get(url, { timeout: timeoutMs }, (res) => {
+        if (res.statusCode !== 200) {
+          res.resume();
+          out.close();
+          fs.rmSync(dest, { force: true });
+          return reject(new TelegramError("downloadFile", `status ${res.statusCode}`, res.statusCode));
+        }
+        res.pipe(out);
+        out.on("finish", () => out.close(() => resolve()));
+      });
+      req.on("timeout", () => req.destroy(new TelegramError("downloadFile", "timed out")));
+      req.on("error", (e) => {
+        out.close();
+        fs.rmSync(dest, { force: true });
+        reject(new TelegramError("downloadFile", String(e)));
+      });
+    });
   }
 }

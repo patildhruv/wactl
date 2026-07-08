@@ -81,8 +81,11 @@ export function routeUpdate(update: TgUpdate): Action {
   if (parsed) {
     return { kind: "topic_command", command: parsed.command, args: parsed.args, threadId, msg };
   }
-  if (msg.text) {
-    return { kind: "topic_message", text: msg.text, threadId, msg };
+  // Actionable if it has text OR a media attachment (photo/document); the caption
+  // rides along as the text.
+  const hasMedia = !!(msg.photo?.length || msg.document);
+  if (msg.text || hasMedia) {
+    return { kind: "topic_message", text: msg.text || msg.caption || "", threadId, msg };
   }
   return { kind: "ignore", reason: "empty topic message" };
 }

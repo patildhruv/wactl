@@ -133,8 +133,21 @@ async function handleUpdate(
     case "topic_message": {
       const sched = scheduleForTopic(action.threadId);
       if (!sched) return;
-      const res = handleTopicMessage(sched, action.text);
-      return fulfil(tg, groupId, action.threadId, res);
+      const att = await gatherAttachments(tg, msg);
+      let text = action.text;
+      if (att.paths.length) {
+        text =
+          `[The user attached ${att.paths.length} file(s). Read each path below to view its contents ` +
+          `(you can Read images and PDFs):]\n${att.paths.join("\n")}` +
+          (text ? `\n\nTheir message: ${text}` : "");
+      }
+      const res = handleTopicMessage(sched, text || "(no text)");
+      try {
+        await fulfil(tg, groupId, action.threadId, res);
+      } finally {
+        if (att.dir) fs.rmSync(att.dir, { recursive: true, force: true });
+      }
+      return;
     }
   }
 }
@@ -221,6 +234,37 @@ async function fulfil(tg: TelegramClient, groupId: number, threadId: number, res
   }
   // Agent output is freeform (may contain <, >, markdown) → send plain.
   await safeSend(tg, groupId, out || "(no reply)", threadId, false);
+}
+
+/**
+ * Download any photo/document on a Telegram message into a temp dir the (wactl)
+ * runner can Read. Returns local file paths + the dir (caller removes it after
+ * the run). Best-effort — a failed download is logged and skipped.
+ */
+async function gatherAttachments(
+  tg: TelegramClient,
+  msg: { photo?: { file_id: string }[]; document?: { file_id: string; file_name?: string } } | undefined
+): Promise<{ paths: string[]; dir: string | null }> {
+  if (!msg) return { paths: [], dir: null };
+  const specs: { file_id: string; name: string }[] = [];
+  if (msg.document) specs.push({ file_id: msg.document.file_id, name: msg.document.file_name || "document" });
+  if (msg.photo?.length) specs.push({ file_id: msg.photo[msg.photo.length - 1].file_id, name: "photo.jpg" });
+  if (!specs.length) return { paths: [], dir: null };
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wactl-tg-att-"));
+  const paths: string[] = [];
+  for (const s of specs) {
+    try {
+      const f = await tg.getFile(s.file_id);
+      const safe = (s.name.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 80)) || "file";
+      const dest = path.join(dir, safe);
+      await tg.downloadFile(f.file_path, dest);
+      paths.push(dest);
+    } catch (e) {
+      log("attachment download failed:", String(e));
+    }
+  }
+  return { paths, dir };
 }
 
 /** Spawn schedule-run.sh, capture the runner's JSON stdout, return the reply text. */
