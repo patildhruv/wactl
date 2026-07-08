@@ -61,4 +61,6 @@ export interface CreateScheduleInput {
   maxMsgs?: number;
   perDayMax?: number;
   dryRun?: boolean;
+  /** Full context.md markdown; if omitted, a placeholder template is seeded. */
+  context?: string;
 }

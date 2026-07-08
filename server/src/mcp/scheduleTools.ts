@@ -13,8 +13,33 @@ import {
   authorizeSend,
   appendLog,
   validateModel,
+  setContext,
   ResolvedRecipient,
 } from "../schedules/store";
+
+/**
+ * The context.md contract. Presented to callers so they author memory in the
+ * shape the runner expects (spec §4). Keep in sync with seedContextMd in store.ts.
+ */
+const CONTEXT_TEMPLATE = `# <slug>
+
+## Person
+<who they are, relationship, contact context>
+
+## Objective
+<what this schedule is trying to achieve>
+
+## Approach & psychology
+<tone, cadence, what works / what to avoid with this person>
+
+## History
+<append-only-ish gist of what has happened>
+
+## Pending
+<what we're currently waiting on>
+
+## Standing instructions
+<hard rules: never do X, always Y, escalate if Z>`;
 
 /**
  * Scheduled-messages MCP tools (spec docs/scheduled-messages-spec.md §5, §13).
@@ -76,11 +101,18 @@ export const SCHEDULE_TOOLS: ToolDef<any>[] = [
     name: "schedule_create",
     description: `Create a scheduled-message schedule: repeating, context-aware WhatsApp outreach with its own durable memory.
 
-The new schedule is created **dryRun=true** — it will NOT send anything until you explicitly disable dryRun (schedule_update or /dryrun off). It reserves a Claude session and seeds a context.md memory doc from \`goal\`, but spends nothing until first triggered. A Telegram topic is provisioned separately by the bot.
+The new schedule is created **dryRun=true** — it will NOT send anything until you explicitly disable dryRun (schedule_update or /dryrun off). It reserves a Claude session and writes a context.md memory doc, but spends nothing until first triggered. A Telegram topic is provisioned separately by the bot.
+
+IMPORTANT — the memory doc (context.md) is what the schedule actually runs on; your chat with the user is NOT carried into it. Author \`context\` yourself, following this exact template (fill every section; this is the contract the runner expects):
+
+${CONTEXT_TEMPLATE}
+
+If you omit \`context\`, the above template is seeded with empty <placeholders> and the schedule will have no real memory until someone fills it (via schedule_set_context or Telegram). Prefer to write it now from what the user told you.
 
 Parameters:
   to (string, required): recipient — a phone ("919999900000"), a full JID, or a saved contact name. Resolved + pinned now; every future send goes only here.
-  goal (string, required): what this schedule should achieve (e.g. "Nudge landlord for the rent receipt on the 1st, politely"). Also seeds context.md.
+  goal (string, required): one-line objective (e.g. "Nudge landlord for the rent receipt on the 1st, politely").
+  context (string, optional but recommended): the full context.md markdown, following the template above.
   cron (string, optional): 5-field cron for the cadence (e.g. "0 9 * * 1"). Omit for a watch-only schedule.
   model (string, optional): per-schedule model; must be a >=1M-context model from the allowlist.
   checkMessages (boolean, optional, default true): pull recent messages before drafting.
@@ -91,7 +123,11 @@ Parameters:
 Returns: the created schedule (slug is its handle for other schedule_* tools).`,
     schema: {
       to: z.string().describe("Recipient: phone, full JID, or saved contact name"),
-      goal: z.string().describe("What this schedule should achieve; seeds context.md"),
+      goal: z.string().describe("One-line objective for this schedule"),
+      context: z
+        .string()
+        .optional()
+        .describe("Full context.md markdown following the template in the description; omit to seed placeholders"),
       cron: z.string().optional().describe("5-field cron cadence; omit for watch-only"),
       model: z.string().optional().describe(">=1M-context model id from the allowlist"),
       checkMessages: z.boolean().optional().describe("Pull recent messages before drafting (default true)"),
@@ -104,6 +140,7 @@ Returns: the created schedule (slug is its handle for other schedule_* tools).`,
       args: {
         to: string;
         goal: string;
+        context?: string;
         cron?: string;
         model?: string;
         checkMessages?: boolean;
@@ -118,6 +155,7 @@ Returns: the created schedule (slug is its handle for other schedule_* tools).`,
         {
           to: args.to,
           goal: args.goal,
+          context: args.context,
           cron: args.cron ?? null,
           model: args.model,
           checkMessages: args.checkMessages,
@@ -156,6 +194,28 @@ Returns: { schedule, context (context.md text), logTail }`,
       context: getContext(args.slug),
       logTail: getLogTail(args.slug),
     }),
+  },
+
+  {
+    name: "schedule_set_context",
+    description: `Replace a schedule's context.md — its durable memory. Use this to author or correct what the schedule "knows" about the person and situation.
+
+Recommended flow: call schedule_get first to read the current context, apply the user's corrections, then write the whole thing back here. Follow the template shape (Person / Objective / Approach & psychology / History / Pending / Standing instructions).
+
+The change is picked up on the schedule's next run: an out-of-band edit like this deliberately forces the next resumed session to re-read the updated memory, so your change takes effect even mid-life.
+
+Parameters:
+  slug (string, required): the schedule handle.
+  content (string, required): the full new context.md markdown (replaces the file).
+Returns: { ok: true, hash }`,
+    schema: {
+      slug: z.string().describe("Schedule handle (slug)"),
+      content: z.string().describe("Full replacement context.md markdown"),
+    },
+    handler: async (_bridge, args: { slug: string; content: string }) => {
+      const { hash } = setContext(args.slug, args.content);
+      return { ok: true, hash };
+    },
   },
 
   {

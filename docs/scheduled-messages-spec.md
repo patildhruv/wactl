@@ -178,9 +178,10 @@ missing one.
 
 | Tool | Args | Effect |
 |---|---|---|
-| `schedule_create` | `to`, `cron?`, `goal`, `checkMessages?`, `maxMsgs?`, `dryRun?` | full creation flow (§6) |
+| `schedule_create` | `to`, `goal`, `context?`, `cron?`, `checkMessages?`, `maxMsgs?`, `perDayMax?`, `dryRun?`, `model?` | full creation flow (§6); `context` = full context.md authored to the template contract |
 | `schedule_list` | — | all schedules + status |
 | `schedule_get` | `slug` | one schedule (incl. context.md, recent log) |
+| `schedule_set_context` | `slug`, `content` | overwrite context.md (out-of-band edit → next run re-reads, §7.1) |
 | `schedule_update` | `slug`, any field incl. `enabled` | patch schedule.json |
 | `schedule_delete` | `slug` | archive folder + close Telegram topic |
 | `schedule_run_now` | `slug` | drop a `.trigger` file the tick picks up next minute |
@@ -579,10 +580,10 @@ docs/scheduled-messages-setup.md"* when `TELEGRAM_*` is blank.
    (+ teardown in `--remove`); the shared cron line; new `.env` keys (blank);
    **a server-code upgrade path** (`install.sh --upgrade` / `scripts/upgrade.sh`
    that git-pulls + rebuilds bridge **and** server + redeploys units/cron —
-   `update-check.sh` only rebuilds the Go bridge); README tool count (7 → 17) +
-   the six `schedule_*` rows; **strip the README's phantom `wactl` CLI
-   advertising** (install.sh never installs it — no CLI surface anywhere);
-   Docker-unsupported line; MAINTENANCE.md ops;
+   `update-check.sh` only rebuilds the Go bridge); README tool count (7 → **19**)
+   + the eight `schedule_*` rows; **strip the
+   README's phantom `wactl` CLI advertising** (install.sh never installs it —
+   no CLI surface anywhere); Docker-unsupported line; MAINTENANCE.md ops;
    `docs/scheduled-messages-setup.md` (BotFather → forum supergroup → bot admin +
    Manage Topics → discovering group-id + user-ids).
 

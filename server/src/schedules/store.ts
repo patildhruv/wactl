@@ -186,7 +186,8 @@ export function createSchedule(
     createdAt: ts,
   };
 
-  fs.writeFileSync(contextPath(slug), seedContextMd(schedule), { mode: 0o600 });
+  const initialContext = input.context?.trim() ? input.context : seedContextMd(schedule);
+  fs.writeFileSync(contextPath(slug), initialContext, { mode: 0o600 });
   schedule.contextHash = sha256File(contextPath(slug));
 
   writeJsonAtomic(schedulePath(slug), schedule);
@@ -219,6 +220,18 @@ export function getSchedule(slug: string): Schedule {
 export function getContext(slug: string): string {
   const p = contextPath(slug);
   return fs.existsSync(p) ? fs.readFileSync(p, "utf-8") : "";
+}
+
+/**
+ * Overwrite context.md out-of-band (from Claude.ai or Telegram /setcontext).
+ * Deliberately does NOT update schedule.json.contextHash — leaving a mismatch so
+ * the next resumed run re-reads the updated memory (spec §7.1). Returns the new
+ * hash for reference.
+ */
+export function setContext(slug: string, content: string): { hash: string } {
+  getSchedule(slug); // existence check
+  fs.writeFileSync(contextPath(slug), content, { mode: 0o600 });
+  return { hash: sha256File(contextPath(slug)) };
 }
 
 export function getLogTail(slug: string, maxChars = 4000): string {
