@@ -23,6 +23,39 @@ import {
 } from "../schedules/store";
 import { Schedule } from "../schedules/types";
 
+/** Escape text for Telegram HTML parse mode (only & < > need escaping). */
+export function esc(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+const code = (s: string) => `<code>${esc(s)}</code>`;
+const b = (s: string) => `<b>${esc(s)}</b>`;
+const pre = (s: string) => `<pre>${esc(s)}</pre>`;
+
+/** The command menu (autocomplete on "/"). Union of general + topic commands. */
+export const BOT_COMMANDS: { command: string; description: string }[] = [
+  { command: "new", description: "Create a schedule: /new <contact> | <goal>" },
+  { command: "list", description: "List all schedules" },
+  { command: "delete", description: "Delete a schedule: /delete <slug>" },
+  { command: "status", description: "This schedule's status" },
+  { command: "log", description: "Recent run log" },
+  { command: "context", description: "Show durable memory (context.md)" },
+  { command: "setcontext", description: "Replace memory: /setcontext <text>" },
+  { command: "goal", description: "View/set goal: /goal [text]" },
+  { command: "when", description: "View/set cron: /when [expr]" },
+  { command: "model", description: "View/set model: /model [name]" },
+  { command: "dryrun", description: "Toggle sending: /dryrun on|off" },
+  { command: "pause", description: "Suspend runs (kill switch)" },
+  { command: "resume", description: "Re-enable runs" },
+  { command: "snooze", description: "Suppress runs: /snooze <2h>" },
+  { command: "maxmsgs", description: "Per-run send cap: /maxmsgs <n>" },
+  { command: "watch", description: "React to replies: /watch <criteria>" },
+  { command: "unwatch", description: "Stop watching" },
+  { command: "runnow", description: "Run now" },
+  { command: "compact", description: "Save memory, fresh session" },
+  { command: "reset", description: "Fresh session (discard buffer)" },
+  { command: "help", description: "Show commands" },
+];
+
 /** Find the schedule bound to a Telegram topic, or null. */
 export function scheduleForTopic(threadId: number): Schedule | null {
   return listSchedules().find((s) => s.telegramTopicId === threadId) || null;
@@ -58,19 +91,20 @@ function reply(text: string): HandlerResult {
 
 function fmtStatus(s: Schedule): string {
   const flags = [
-    s.enabled ? "enabled" : "DISABLED",
-    s.dryRun ? "dryRun" : "LIVE",
-    s.watch ? `watching:"${s.watch.criteria}"` : null,
-    s.snoozeUntil && s.snoozeUntil > nowSec() ? `snoozed→${new Date(s.snoozeUntil * 1000).toISOString()}` : null,
-  ].filter(Boolean);
+    s.enabled ? "✅ enabled" : "⛔ DISABLED",
+    s.dryRun ? "🧪 dryRun" : "🔴 LIVE",
+    s.watch ? `👀 watching` : null,
+    s.snoozeUntil && s.snoozeUntil > nowSec() ? `😴 snoozed` : null,
+  ].filter(Boolean) as string[];
   return [
-    `📋 ${s.slug}`,
-    `to: ${s.toIdentity}   model: ${s.model}`,
-    `cron: ${s.cron || "(watch-only)"}   caps: ${s.maxMsgs}/run, ${s.perDayMax}/day`,
-    `state: ${flags.join(" · ")}`,
-    `goal: ${s.goal}`,
-    s.lastRun ? `last run: ${new Date(s.lastRun * 1000).toISOString()}` : "last run: never",
-  ].join("\n");
+    `📋 ${b(s.slug)}`,
+    `${b("to")} ${code(s.toIdentity)}   ${b("model")} ${code(s.model)}`,
+    `${b("cron")} ${code(s.cron || "(watch-only)")}   ${b("caps")} ${s.maxMsgs}/run · ${s.perDayMax}/day`,
+    `${b("state")} ${flags.join(" · ")}`,
+    s.watch ? `${b("watch")} ${esc(s.watch.criteria)}` : "",
+    `${b("goal")} ${esc(s.goal)}`,
+    s.lastRun ? `${b("last run")} ${esc(new Date(s.lastRun * 1000).toISOString())}` : `${b("last run")} never`,
+  ].filter(Boolean).join("\n");
 }
 
 /**
@@ -94,56 +128,56 @@ export function handleTopicCommand(sched: Schedule, command: string, args: strin
       case "dryrun": {
         const on = /^on|true|1$/i.test(args.trim());
         const off = /^off|false|0$/i.test(args.trim());
-        if (!on && !off) return reply("usage: /dryrun on|off");
+        if (!on && !off) return reply(`usage: ${code("/dryrun on|off")}`);
         updateSchedule(slug, { dryRun: on });
-        return reply(on ? "🧪 dryRun ON — will draft to log, not send." : "✅ dryRun OFF — this schedule can now SEND.");
+        return reply(on ? "🧪 dryRun " + b("ON") + " — will draft to log, not send." : "🔴 dryRun " + b("OFF") + " — this schedule can now SEND.");
       }
       case "maxmsgs": {
         const n = parseInt(args.trim(), 10);
-        if (!Number.isFinite(n) || n < 0) return reply("usage: /maxmsgs <n>");
+        if (!Number.isFinite(n) || n < 0) return reply(`usage: ${code("/maxmsgs <n>")}`);
         updateSchedule(slug, { maxMsgs: n });
-        return reply(`per-run cap set to ${n}.`);
+        return reply(`per-run cap set to ${b(String(n))}.`);
       }
       case "snooze": {
         const secs = parseDuration(args);
-        if (secs === null) return reply("usage: /snooze <dur> e.g. 2h, 30m, 1d");
+        if (secs === null) return reply(`usage: ${code("/snooze <dur>")} e.g. 2h, 30m, 1d`);
         updateSchedule(slug, { snoozeUntil: nowSec() + secs });
-        return reply(`😴 snoozed for ${args.trim()} (until ${new Date((nowSec() + secs) * 1000).toISOString()}).`);
+        return reply(`😴 snoozed for ${b(esc(args.trim()))} (until ${code(new Date((nowSec() + secs) * 1000).toISOString())}).`);
       }
       case "when": {
-        if (!args.trim()) return reply(`cron: ${sched.cron || "(watch-only)"}`);
+        if (!args.trim()) return reply(`cron: ${code(sched.cron || "(watch-only)")}`);
         updateSchedule(slug, { cron: args.trim() });
-        return reply(`⏰ cadence set to \`${args.trim()}\`.`);
+        return reply(`⏰ cadence set to ${code(args.trim())}.`);
       }
       case "goal": {
-        if (!args.trim()) return reply(`goal: ${sched.goal}`);
+        if (!args.trim()) return reply(`${b("goal")} ${esc(sched.goal)}`);
         updateSchedule(slug, { goal: args.trim() });
         return reply("🎯 goal updated.");
       }
       case "model": {
-        if (!args.trim()) return reply(`model: ${sched.model}`);
+        if (!args.trim()) return reply(`${b("model")} ${code(sched.model)}`);
         try {
           validateModel(args.trim());
         } catch (e) {
-          return reply(`❌ ${(e as Error).message}`);
+          return reply(`❌ ${esc((e as Error).message)}`);
         }
         updateSchedule(slug, { model: args.trim() });
-        return reply(`🧠 model set to ${args.trim()}.`);
+        return reply(`🧠 model set to ${code(args.trim())}.`);
       }
       case "context":
-        return reply("📄 context.md:\n\n" + (getContext(slug) || "(empty)"));
+        return reply(`📄 ${b("context.md")}\n${pre(getContext(slug) || "(empty)")}`);
       case "setcontext":
-        if (!args.trim()) return reply("usage: /setcontext <full new context.md>");
+        if (!args.trim()) return reply(`usage: ${code("/setcontext <full new context.md>")}`);
         setContext(slug, args);
         return reply("💾 context.md replaced — next run will pick it up.");
       case "log":
-        return reply("🧾 recent log:\n\n" + (getLogTail(slug) || "(empty)"));
+        return reply(`🧾 ${b("recent log")}\n${pre(getLogTail(slug) || "(empty)")}`);
       case "watch": {
-        if (!args.trim()) return reply("usage: /watch <criteria>");
+        if (!args.trim()) return reply(`usage: ${code("/watch <criteria>")}`);
         updateSchedule(slug, {
           watch: { watchTarget: { identity: sched.toIdentity, jid: sched.toJid }, criteria: args.trim(), since: nowSec() },
         });
-        return reply(`👀 watching for: "${args.trim()}" (on ${sched.toIdentity}).`);
+        return reply(`👀 watching for: ${b(esc(args.trim()))} (on ${code(sched.toIdentity)}).`);
       }
       case "unwatch":
         updateSchedule(slug, { watch: null });
@@ -157,12 +191,12 @@ export function handleTopicCommand(sched: Schedule, command: string, args: strin
       case "runnow":
         return { kind: "run", slug, event: "runnow", ack: "⏳ running now…" };
       case "delete":
-        return reply("to delete, use /delete in the General topic (it also closes this topic).");
+        return reply(`to delete, use ${code("/delete <slug>")} in the General topic (it also closes this topic).`);
       default:
-        return reply(`unknown command /${command}. /help for the list.`);
+        return reply(`unknown command /${esc(command)} — /help for the list.`);
     }
   } catch (e) {
-    return reply(`❌ ${(e as Error).message}`);
+    return reply(`❌ ${esc((e as Error).message)}`);
   }
 }
 
@@ -172,18 +206,22 @@ export function handleTopicMessage(sched: Schedule, text: string): RunRequest {
 }
 
 export const TOPIC_HELP = [
-  "Commands in this schedule's topic:",
-  "/status /log /context /setcontext <md>",
-  "/pause /resume /dryrun on|off /maxmsgs <n> /snooze <dur>",
-  "/when [cron] /goal [text] /model [name]",
-  "/watch <criteria> /unwatch /runnow /compact /reset",
-  "…or just talk to me — I'll act with this schedule's memory.",
+  b("Commands for this schedule"),
+  "",
+  `${code("/status")} · ${code("/log")} · ${code("/context")} · ${code("/setcontext <md>")}`,
+  `${code("/dryrun on|off")} · ${code("/pause")} · ${code("/resume")} · ${code("/snooze <2h>")} · ${code("/maxmsgs <n>")}`,
+  `${code("/when [cron]")} · ${code("/goal [text]")} · ${code("/model [name]")}`,
+  `${code("/watch <criteria>")} · ${code("/unwatch")} · ${code("/runnow")} · ${code("/compact")} · ${code("/reset")}`,
+  "",
+  "…or just <i>talk</i> to me — I'll act with this schedule's memory.",
 ].join("\n");
 
 export const GENERAL_HELP = [
-  "wactl scheduled messages — General topic:",
-  "/new <phone-or-contact> | <goal>   create a schedule (dryRun by default)",
-  "/list                              all schedules",
-  "/delete <slug>                     delete a schedule + close its topic",
+  b("wactl · scheduled messages"),
+  "",
+  `${code("/new <contact> | <goal>")}  — create a schedule (dryRun by default)`,
+  `${code("/list")}  — all schedules`,
+  `${code("/delete <slug>")}  — delete a schedule + close its topic`,
+  "",
   "Each schedule gets its own topic; manage it there.",
 ].join("\n");

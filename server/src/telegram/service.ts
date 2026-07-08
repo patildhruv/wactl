@@ -20,7 +20,10 @@ import {
   scheduleForTopic,
   RunRequest,
   GENERAL_HELP,
+  BOT_COMMANDS,
+  esc,
 } from "./handlers";
+import { TelegramError } from "./api";
 import { listSchedules, getSchedule, createSchedule, deleteSchedule } from "../schedules/store";
 import { resolveRecipient } from "../schedules/recipient";
 import { BridgeClient } from "../bridge/client";
@@ -63,6 +66,10 @@ async function main() {
     process.exit(1);
   });
   log(`connected as @${(me as any).username} — group ${groupId}, ${allowedUserIds.length} allowed user(s)`);
+
+  // Register the slash-command menu (autocomplete on "/") + profile blurb.
+  await tg.setMyCommands(BOT_COMMANDS).catch((e) => log("setMyCommands failed:", String(e)));
+  await tg.setMyShortDescription("Schedule context-aware WhatsApp messages — one topic per schedule.").catch(() => {});
 
   await reconcileTopics(tg, groupId).catch((e) => log("initial topic reconcile failed:", String(e)));
 
@@ -115,7 +122,7 @@ async function handleUpdate(
       return handleGeneral(tg, bridge, groupId, action.command, action.args, msg.message_thread_id);
     case "topic_command": {
       const sched = scheduleForTopic(action.threadId);
-      if (!sched) return void tg.sendMessage(groupId, "no schedule bound to this topic.", action.threadId);
+      if (!sched) return void safeSend(tg, groupId, "No schedule is bound to this topic.", action.threadId);
       const res = handleTopicCommand(sched, action.command, action.args);
       return fulfil(tg, groupId, action.threadId, res);
     }
@@ -136,24 +143,24 @@ async function handleGeneral(
   args: string,
   threadId?: number
 ): Promise<void> {
-  if (command === "help") return void tg.sendMessage(groupId, GENERAL_HELP, threadId);
+  if (command === "help") return void safeSend(tg, groupId, GENERAL_HELP, threadId);
   if (command === "list") {
     const all = listSchedules();
     const body = all.length
-      ? all.map((s) => `• ${s.slug} → ${s.toIdentity} [${s.enabled ? (s.dryRun ? "dry" : "live") : "off"}]`).join("\n")
-      : "no schedules yet. /new <phone-or-contact> | <goal>";
-    return void tg.sendMessage(groupId, body, threadId);
+      ? "<b>Schedules</b>\n" + all.map((s) => `• <code>${esc(s.slug)}</code> → ${esc(s.toIdentity)} [${s.enabled ? (s.dryRun ? "dry" : "🔴 live") : "off"}]`).join("\n")
+      : "No schedules yet. <code>/new &lt;contact&gt; | &lt;goal&gt;</code>";
+    return void safeSend(tg, groupId, body, threadId);
   }
   if (command === "delete") {
     const slug = args.trim();
-    if (!slug) return void tg.sendMessage(groupId, "usage: /delete <slug> (see /list)", threadId);
+    if (!slug) return void safeSend(tg, groupId, "usage: <code>/delete &lt;slug&gt;</code> (see /list)", threadId);
     try {
       const s = getSchedule(slug);
       deleteSchedule(slug);
       if (s.telegramTopicId != null) await tg.closeForumTopic(groupId, s.telegramTopicId).catch(() => {});
-      await tg.sendMessage(groupId, `🗑️ deleted "${slug}" (archived to trash; topic closed).`, threadId);
+      await safeSend(tg, groupId, `🗑️ deleted <code>${esc(slug)}</code> (archived to trash; topic closed).`, threadId);
     } catch (e) {
-      await tg.sendMessage(groupId, `❌ ${(e as Error).message}`, threadId);
+      await safeSend(tg, groupId, `❌ ${esc((e as Error).message)}`, threadId);
     }
     return;
   }
@@ -162,28 +169,54 @@ async function handleGeneral(
     const [rawTo, ...rest] = args.includes("|") ? args.split("|") : args.split(/\s+/);
     const to = (rawTo || "").trim();
     const goal = (args.includes("|") ? rest.join("|") : rest.join(" ")).trim();
-    if (!to || !goal) return void tg.sendMessage(groupId, "usage: /new <phone-or-contact> | <goal>", threadId);
+    if (!to || !goal) return void safeSend(tg, groupId, "usage: <code>/new &lt;phone-or-contact&gt; | &lt;goal&gt;</code>", threadId);
     try {
       const recipient = await resolveRecipient(bridge, to);
       const sched = createSchedule({ to, goal }, recipient);
-      await tg.sendMessage(groupId, `created "${sched.slug}" → ${recipient.identity} (dryRun). Creating its topic…`, threadId);
+      await safeSend(tg, groupId, `✅ created <code>${esc(sched.slug)}</code> → ${esc(recipient.identity)} (🧪 dryRun). Creating its topic…`, threadId);
       await reconcileTopics(tg, groupId); // gives it a topic immediately
     } catch (e) {
-      await tg.sendMessage(groupId, `❌ ${(e as Error).message}`, threadId);
+      await safeSend(tg, groupId, `❌ ${esc((e as Error).message)}`, threadId);
     }
   }
 }
 
-/** Post a reply, or run the runner (with an ack) and post its result. */
+/**
+ * Send an HTML message, falling back to plain text if Telegram rejects the
+ * markup (a missed escape must never mean silence). Bot-authored messages are
+ * HTML; freeform agent output is sent plain.
+ */
+async function safeSend(tg: TelegramClient, chatId: number, text: string, threadId?: number, html = true): Promise<void> {
+  try {
+    await tg.sendMessage(chatId, text, threadId, html ? "HTML" : undefined);
+  } catch (e) {
+    if (html && e instanceof TelegramError) {
+      log("HTML send rejected, retrying plain:", e.description);
+      await tg.sendMessage(chatId, text, threadId).catch((e2) => log("plain send also failed:", String(e2)));
+    } else {
+      log("send failed:", String(e));
+    }
+  }
+}
+
+/** Post a reply, or run the runner (with a live typing indicator) and post its result. */
 async function fulfil(tg: TelegramClient, groupId: number, threadId: number, res: ReturnType<typeof handleTopicCommand>): Promise<void> {
   if (res.kind === "reply") {
-    await tg.sendMessage(groupId, res.text, threadId);
+    await safeSend(tg, groupId, res.text, threadId);
     return;
   }
-  // RunRequest — ack, run, post the agent's reply.
-  await tg.sendMessage(groupId, res.ack, threadId);
-  const out = await invokeRunner(res);
-  await tg.sendMessage(groupId, out || "(no reply)", threadId);
+  // RunRequest — ack + keep a "typing…" indicator alive while the agent runs.
+  await safeSend(tg, groupId, res.ack, threadId);
+  tg.sendChatAction(groupId, "typing", threadId);
+  const typing = setInterval(() => tg.sendChatAction(groupId, "typing", threadId), 4500);
+  let out: string;
+  try {
+    out = await invokeRunner(res);
+  } finally {
+    clearInterval(typing);
+  }
+  // Agent output is freeform (may contain <, >, markdown) → send plain.
+  await safeSend(tg, groupId, out || "(no reply)", threadId, false);
 }
 
 /** Spawn schedule-run.sh, capture the runner's JSON stdout, return the reply text. */
@@ -219,7 +252,12 @@ async function reconcileTopics(tg: TelegramClient, groupId: number): Promise<voi
       const topic = await tg.createForumTopic(groupId, s.slug);
       const { updateSchedule } = await import("../schedules/store");
       updateSchedule(s.slug, { telegramTopicId: topic.message_thread_id });
-      await tg.sendMessage(groupId, `🆕 schedule "${s.slug}" → ${s.toIdentity}. Manage it here.`, topic.message_thread_id);
+      await safeSend(
+        tg,
+        groupId,
+        `🆕 <b>${esc(s.slug)}</b> → ${esc(s.toIdentity)} (🧪 dryRun)\nManage it here — <code>/status</code>, <code>/help</code>, or just talk to me.`,
+        topic.message_thread_id
+      );
       log(`created topic ${topic.message_thread_id} for ${s.slug}`);
     } catch (e) {
       log(`topic create failed for ${s.slug}:`, String(e));

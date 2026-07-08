@@ -98,10 +98,31 @@ export class TelegramClient {
     );
   }
 
-  sendMessage(chatId: number, text: string, threadId?: number): Promise<TgMessage> {
-    const params: Record<string, unknown> = { chat_id: chatId, text };
+  sendMessage(chatId: number, text: string, threadId?: number, parseMode?: "HTML" | "MarkdownV2"): Promise<TgMessage> {
+    const params: Record<string, unknown> = { chat_id: chatId, text, link_preview_options: { is_disabled: true } };
     if (threadId !== undefined) params.message_thread_id = threadId;
+    if (parseMode) params.parse_mode = parseMode;
     return this.call<TgMessage>("sendMessage", params);
+  }
+
+  /** Show a "typing…" indicator (lasts ~5s; re-send to keep it up). */
+  sendChatAction(chatId: number, action: string, threadId?: number): Promise<boolean> {
+    const params: Record<string, unknown> = { chat_id: chatId, action };
+    if (threadId !== undefined) params.message_thread_id = threadId;
+    return this.call<boolean>("sendChatAction", params).catch(() => false);
+  }
+
+  /** Register the command menu (autocomplete on "/"). */
+  setMyCommands(commands: { command: string; description: string }[]): Promise<boolean> {
+    return this.call<boolean>("setMyCommands", { commands });
+  }
+
+  setMyDescription(description: string): Promise<boolean> {
+    return this.call<boolean>("setMyDescription", { description }).catch(() => false);
+  }
+
+  setMyShortDescription(short_description: string): Promise<boolean> {
+    return this.call<boolean>("setMyShortDescription", { short_description }).catch(() => false);
   }
 
   createForumTopic(chatId: number, name: string): Promise<ForumTopic> {
