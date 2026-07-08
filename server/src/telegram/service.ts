@@ -44,7 +44,10 @@ async function main() {
   // the operator filling in the token.
   if (!token || !Number.isFinite(groupId)) {
     log("TELEGRAM_BOT_TOKEN / TELEGRAM_GROUP_ID not set — idling (feature dormant).");
-    await new Promise(() => {}); // sleep forever; systemd keeps us alive without restart storms
+    // A pending promise alone does NOT keep Node's event loop alive — register a
+    // long timer so the process stays up instead of exiting and restart-looping.
+    setInterval(() => {}, 1 << 30);
+    await new Promise(() => {});
     return;
   }
   if (!allowedUserIds.length) {

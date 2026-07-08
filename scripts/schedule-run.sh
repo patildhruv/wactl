@@ -32,6 +32,7 @@ ANTHROPIC_BASE_URL="$(get ANTHROPIC_BASE_URL)" # gateway (e.g. Azure Foundry) â€
 ANTHROPIC_AUTH_TOKEN="$(get ANTHROPIC_AUTH_TOKEN)" # Bearer token for the gateway
 SCHEDULE_COMPACT_TOKEN_THRESHOLD="$(get SCHEDULE_COMPACT_TOKEN_THRESHOLD)"
 CLAUDE_BIN="$(get CLAUDE_BIN)"; CLAUDE_BIN="${CLAUDE_BIN:-claude}"  # abs path (wactl user may lack root's PATH)
+CLAUDE_CONFIG_DIR="$(get CLAUDE_CONFIG_DIR)"   # where claude stores sessions; must be RUN_AS-writable
 NTFY_TOPIC="$(get NTFY_TOPIC)"
 NTFY_SERVER="$(get NTFY_SERVER)"; NTFY_SERVER="${NTFY_SERVER:-https://ntfy.sh}"
 
@@ -69,6 +70,9 @@ run_env=(
   CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
   SCHEDULE_COMPACT_TOKEN_THRESHOLD="${SCHEDULE_COMPACT_TOKEN_THRESHOLD:-450000}"
 )
+if [ -n "$CLAUDE_CONFIG_DIR" ]; then
+  run_env+=(CLAUDE_CONFIG_DIR="$CLAUDE_CONFIG_DIR")
+fi
 if [ -n "$ANTHROPIC_BASE_URL" ]; then
   run_env+=(ANTHROPIC_BASE_URL="$ANTHROPIC_BASE_URL")
 fi
@@ -82,7 +86,7 @@ fi
 # Drop to the wactl user if it exists and we aren't already it.
 sudo_prefix=()
 if [ "$(id -un)" != "$RUN_AS" ] && id "$RUN_AS" >/dev/null 2>&1; then
-  sudo_prefix=(sudo -u "$RUN_AS")
+  sudo_prefix=(sudo -H -u "$RUN_AS")   # -H sets the target user's HOME
 fi
 
 # flock -w 300: bounded wait so a hung run can't wedge the schedule forever.
