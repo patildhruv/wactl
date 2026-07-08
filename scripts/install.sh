@@ -533,6 +533,8 @@ ExecStart=/usr/bin/node $INSTALL_DIR/server/dist/index.js
 Restart=always
 RestartSec=5
 EnvironmentFile=$INSTANCE_DIR/.env
+Environment=INSTANCE_NAME=$NAME
+Environment=INSTALL_DIR=$INSTALL_DIR
 
 [Install]
 WantedBy=multi-user.target

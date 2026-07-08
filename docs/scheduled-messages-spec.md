@@ -600,8 +600,17 @@ docs/scheduled-messages-setup.md"* when `TELEGRAM_*` is blank.
    Runner CLI now emits `reply` for the service to post. Per-instance
    `wactl-<name>-telegram` systemd unit (User=wactl, idles when unconfigured) +
    teardown in `--remove`.
-5. **Watch mode** — `message` branch in `/bridge/events` (+ optional msg-id
-   payload) with canonical-identity match; since-based poll backstop in the tick.
+5. **Watch mode** — ✅ **DONE**. `message` branch in `/bridge/events`
+   (`index.ts`) matches inbound against `activeWatches()` by JID / bare-user-part
+   and **detach-spawns** the runner (`watch` event) — low-latency fast-path.
+   `watch-poll.ts` is the **source-of-truth backstop** in the tick: per active
+   watch it checks the bridge for inbound past the cursor and fires the runner.
+   `runner.runWatch` re-fetches, **skips the claude spawn when nothing is new**,
+   and advances `watch.since` — so callback + poll firings for the same message
+   run exactly once. Inbound is passed as untrusted-delimited payload.
+   store: `watchMatches` / `activeWatches` / `advanceWatchSince`. 15 watch unit
+   checks green; no Go change used (JID match suffices given bridge
+   normalization). Live verification pending a bot + real inbound.
 6. **Install + docs** — install the `claude` CLI + document setting
    `ANTHROPIC_API_KEY` in the instance `.env` + runner preflight;
    `wactl-<name>-telegram` unit in the instance block

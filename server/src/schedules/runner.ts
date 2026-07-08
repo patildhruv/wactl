@@ -30,7 +30,9 @@ import {
   currentContextHash,
   rotateSession,
   RotateResult,
+  advanceWatchSince,
 } from "./store";
+import { BridgeClient } from "../bridge/client";
 
 const CEILING = parseInt(process.env.SCHEDULE_COMPACT_TOKEN_THRESHOLD || "450000", 10);
 const CLAUDE_BIN = process.env.CLAUDE_BIN || "claude";
@@ -215,6 +217,35 @@ export function runClaude(args: {
   }
 }
 
+export interface WatchNewMessages {
+  payload: string;
+  newestTs: number;
+}
+
+/**
+ * For a watch run, pull inbound messages on the watchTarget newer than the
+ * watch cursor, directly from the bridge (localhost, no MCP key). Returns null
+ * when nothing new — the caller then skips spawning claude entirely, which
+ * makes both the callback fast-path and the poll backstop idempotent (spec §11).
+ */
+export async function fetchWatchInbound(schedule: Schedule, bridgePort: number): Promise<WatchNewMessages | null> {
+  if (!schedule.watch) return null;
+  const bridge = new BridgeClient(bridgePort);
+  const msgs = await bridge.searchMessages({
+    chatJid: schedule.watch.watchTarget.jid,
+    since: schedule.watch.since + 1, // strictly after the cursor
+    limit: 20,
+  });
+  const inbound = msgs.filter((m) => !m.isFromMe);
+  if (!inbound.length) return null;
+  const newestTs = Math.max(...inbound.map((m) => m.timestamp));
+  const payload = inbound
+    .sort((a, b) => a.timestamp - b.timestamp)
+    .map((m) => `[${new Date(m.timestamp * 1000).toISOString()}] ${m.senderName || m.from}: ${m.body}`)
+    .join("\n");
+  return { payload, newestTs };
+}
+
 /** Orchestrate one run. Throws on failure so the shell wrapper can ntfy. */
 export function runOnce(dataDir: string, slug: string, event: string, payload?: string): ClaudeResult {
   process.env.DATA_DIR = dataDir;
@@ -327,6 +358,24 @@ export function compact(dataDir: string, slug: string, mode: "compact" | "reset"
   return { ...rot, compactionRan };
 }
 
+/**
+ * Watch run: fetch new inbound on the watchTarget, skip if nothing new, else run
+ * the agent with that inbound as untrusted payload and advance the cursor so it
+ * isn't reprocessed. Idempotent across callback fast-path + poll backstop.
+ */
+export async function runWatch(dataDir: string, slug: string, bridgePort: number): Promise<ClaudeResult | { ok: true; skipped: true }> {
+  process.env.DATA_DIR = dataDir;
+  const schedule = getSchedule(slug);
+  if (!schedule.watch) return { ok: true, skipped: true };
+  const found = await fetchWatchInbound(schedule, bridgePort);
+  if (!found) {
+    return { ok: true, skipped: true }; // nothing new — no claude spawn
+  }
+  const result = runOnce(dataDir, slug, "watch", found.payload);
+  advanceWatchSince(slug, found.newestTs);
+  return result;
+}
+
 // CLI: node runner.js <dataDir> <slug> <event> [payloadFile]
 if (require.main === module) {
   const [, , dataDir, slug, event = "cron", payloadFile] = process.argv;
@@ -335,17 +384,26 @@ if (require.main === module) {
     process.exit(2);
   }
   const payload = payloadFile && fs.existsSync(payloadFile) ? fs.readFileSync(payloadFile, "utf-8") : undefined;
+  const done = (obj: unknown) => console.log(JSON.stringify(obj));
+  const fail = (e: unknown) => {
+    console.error(String((e as Error).message));
+    process.exit(1);
+  };
   try {
     if (event === "compact" || event === "reset") {
       const r = compact(dataDir, slug, event);
-      console.log(JSON.stringify({ ok: true, mode: event, newSessionId: r.newSessionId, archivedTo: r.archivedTo }));
+      done({ ok: true, mode: event, newSessionId: r.newSessionId, archivedTo: r.archivedTo });
+    } else if (event === "watch") {
+      const bridgePort = parseInt(process.env.BRIDGE_PORT || "4000", 10);
+      runWatch(dataDir, slug, bridgePort)
+        .then((r) => done({ ok: true, ...(("skipped" in r) ? { skipped: true } : { reply: (r as ClaudeResult).result }) }))
+        .catch(fail);
     } else {
       const r = runOnce(dataDir, slug, event, payload);
       // `reply` is the agent's text — the telegram service posts it back to the topic.
-      console.log(JSON.stringify({ ok: true, sessionId: r.sessionId, tokens: r.inputTokens, reply: r.result }));
+      done({ ok: true, sessionId: r.sessionId, tokens: r.inputTokens, reply: r.result });
     }
   } catch (e) {
-    console.error(String((e as Error).message));
-    process.exit(1);
+    fail(e);
   }
 }

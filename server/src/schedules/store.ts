@@ -345,6 +345,43 @@ export function currentContextHash(slug: string): string {
   return fs.existsSync(p) ? sha256File(p) : "";
 }
 
+// --- Watch mode (spec §11) -------------------------------------------------
+
+/** Bare user-part of a JID ("919999900000@s.whatsapp.net" → "919999900000"). */
+function jidUser(jid: string): string {
+  return jid.split("@")[0].split(":")[0];
+}
+
+/**
+ * Does an inbound message on `chatJid` belong to this schedule's watch? The
+ * bridge normalizes @lid → phone JID for 1:1s (handleMessage), so a direct JID
+ * match works for both 1:1 and @g.us; we also compare bare user-parts as a
+ * belt-and-suspenders against addressing drift (spec §11).
+ */
+export function watchMatches(schedule: Schedule, chatJid: string): boolean {
+  if (!schedule.watch) return false;
+  const target = schedule.watch.watchTarget.jid;
+  if (target === chatJid) return true;
+  return jidUser(target) === jidUser(chatJid);
+}
+
+/** Enabled, non-snoozed schedules that have an active watch. */
+export function activeWatches(atSec: number = nowSec()): Schedule[] {
+  return listSchedules().filter(
+    (s) => s.watch && s.enabled && !(s.snoozeUntil && atSec < s.snoozeUntil)
+  );
+}
+
+/** Advance a watch's `since` cursor so processed messages aren't re-processed. */
+export function advanceWatchSince(slug: string, sinceSec: number): void {
+  const s = getSchedule(slug);
+  if (!s.watch) return;
+  if (sinceSec > s.watch.since) {
+    s.watch = { ...s.watch, since: sinceSec };
+    writeJsonAtomic(schedulePath(slug), s);
+  }
+}
+
 // --- Session rotation (spec §7.2 / §7.3) -----------------------------------
 
 /**

@@ -27,6 +27,7 @@ get() { grep -E "^$1=" "$ENV_FILE" | head -1 | cut -d= -f2-; }
 DATA_DIR="$(get DATA_DIR)"
 MCP_PORT="$(get MCP_PORT)"
 MCP_API_KEY="$(get MCP_API_KEY)"
+BRIDGE_PORT="$(get BRIDGE_PORT)"               # watch runs read inbound from the bridge
 ANTHROPIC_API_KEY="$(get ANTHROPIC_API_KEY)"   # runner auth: key takes precedence over any login
 SCHEDULE_COMPACT_TOKEN_THRESHOLD="$(get SCHEDULE_COMPACT_TOKEN_THRESHOLD)"
 NTFY_TOPIC="$(get NTFY_TOPIC)"
@@ -58,6 +59,7 @@ run_env=(
   DATA_DIR="$DATA_DIR"
   MCP_PORT="$MCP_PORT"
   MCP_API_KEY="$MCP_API_KEY"
+  BRIDGE_PORT="${BRIDGE_PORT:-4000}"
   CLAUDE_BIN="$CLAUDE_BIN"
   SCHEDULE_COMPACT_TOKEN_THRESHOLD="${SCHEDULE_COMPACT_TOKEN_THRESHOLD:-450000}"
 )
