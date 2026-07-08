@@ -70,7 +70,7 @@ function logPath(slug: string): string {
 
 function writeAtomic(file: string, data: string): void {
   const tmp = `${file}.${process.pid}.${uuidv4().slice(0, 8)}.tmp`;
-  fs.writeFileSync(tmp, data, { mode: 0o600 });
+  fs.writeFileSync(tmp, data, { mode: 0o660 });
   fs.renameSync(tmp, file);
 }
 
@@ -157,11 +157,11 @@ export function createSchedule(
   const model = input.model || DEFAULT_MODEL;
   validateModel(model);
 
-  fs.mkdirSync(schedulesRoot(), { recursive: true });
+  fs.mkdirSync(schedulesRoot(), { recursive: true, mode: 0o2770 });
   const slug = slugify(input.goal);
   const dir = scheduleDir(slug);
-  fs.mkdirSync(dir, { recursive: true });
-  fs.mkdirSync(path.join(dir, "sessions", "archive"), { recursive: true });
+  fs.mkdirSync(dir, { recursive: true, mode: 0o2770 });
+  fs.mkdirSync(path.join(dir, "sessions", "archive"), { recursive: true, mode: 0o2770 });
 
   const ts = nowSec();
   const schedule: Schedule = {
@@ -182,12 +182,13 @@ export function createSchedule(
     snoozeUntil: null,
     telegramTopicId: null,
     contextHash: "",
+    sessionStarted: false,
     lastRun: null,
     createdAt: ts,
   };
 
   const initialContext = input.context?.trim() ? input.context : seedContextMd(schedule);
-  fs.writeFileSync(contextPath(slug), initialContext, { mode: 0o600 });
+  fs.writeFileSync(contextPath(slug), initialContext, { mode: 0o660 });
   schedule.contextHash = sha256File(contextPath(slug));
 
   writeJsonAtomic(schedulePath(slug), schedule);
@@ -230,7 +231,7 @@ export function getContext(slug: string): string {
  */
 export function setContext(slug: string, content: string): { hash: string } {
   getSchedule(slug); // existence check
-  fs.writeFileSync(contextPath(slug), content, { mode: 0o600 });
+  fs.writeFileSync(contextPath(slug), content, { mode: 0o660 });
   return { hash: sha256File(contextPath(slug)) };
 }
 
@@ -255,6 +256,8 @@ const PATCHABLE: (keyof Schedule)[] = [
   "telegramTopicId",
   "model",
   "sessionId",
+  "sessionStarted",
+  "contextHash",
   "lastRun",
 ];
 
@@ -285,6 +288,36 @@ export function deleteSchedule(slug: string): { archivedTo: string } {
 export function requestRunNow(slug: string): void {
   if (!fs.existsSync(scheduleDir(slug))) throw new Error(`no such schedule: ${slug}`);
   fs.writeFileSync(path.join(scheduleDir(slug), ".trigger"), String(nowSec()));
+}
+
+/** True if a .trigger file is present (manual run requested). */
+export function hasTrigger(slug: string): boolean {
+  return fs.existsSync(path.join(scheduleDir(slug), ".trigger"));
+}
+
+/** Consume (delete) a schedule's .trigger file if present. Called by the runner. */
+export function clearTrigger(slug: string): void {
+  const p = path.join(scheduleDir(slug), ".trigger");
+  if (fs.existsSync(p)) fs.rmSync(p);
+}
+
+/** Directory a run should cwd into — the schedule's own folder (session binding + confinement). */
+export function scheduleCwd(slug: string): string {
+  return scheduleDir(slug);
+}
+
+/** Absolute paths the runner/agent operate on. */
+export function contextFile(slug: string): string {
+  return contextPath(slug);
+}
+export function logFile(slug: string): string {
+  return logPath(slug);
+}
+
+/** Hash of context.md as it currently is on disk (vs the stored `contextHash`). */
+export function currentContextHash(slug: string): string {
+  const p = contextPath(slug);
+  return fs.existsSync(p) ? sha256File(p) : "";
 }
 
 // --- Send enforcement (spec §13.1) -----------------------------------------
@@ -371,5 +404,5 @@ export function authorizeSend(slug: string, token: string): { toJid: string } {
 /** Record a sent messageId into the schedule's log.md (append-only, spec §13.4). */
 export function appendLog(slug: string, line: string): void {
   const stamp = new Date().toISOString();
-  fs.appendFileSync(logPath(slug), `- ${stamp} ${line}\n`, { mode: 0o600 });
+  fs.appendFileSync(logPath(slug), `- ${stamp} ${line}\n`, { mode: 0o660 });
 }

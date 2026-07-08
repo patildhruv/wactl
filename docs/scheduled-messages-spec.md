@@ -283,7 +283,7 @@ discarding the live buffer).
 ## 8. Runner (`scripts/schedule-run.sh <instance> <slug> <event-type> [payload]`)
 
 ```bash
-# 1. cd to the fixed project dir (sessions are bound to cwd)
+# 1. cd to the SCHEDULE'S OWN folder (per-schedule session binding + Read/Edit locality)
 # 2. read instance .env → MCP_PORT, MCP_API_KEY
 # 3. write a scoped --mcp-config for the local wactl HTTP MCP server
 # 4. build prompt from event-type (§10) + session-state rule (§7.1)
@@ -550,7 +550,8 @@ TELEGRAM_GROUP_ID=                # -100…
 TELEGRAM_ALLOWED_USER_IDS=        # comma-separated; EMPTY = deny all (fail-closed)
 SCHEDULE_COMPACT_TOKEN_THRESHOLD=450000   # safety ceiling; all allowed models are >=1M context
 SCHEDULE_DEFAULT_MODEL=sonnet[1m]         # per-schedule override via /model; must be >=1M context
-SCHEDULE_PROJECT_DIR=/opt/wactl/instances/<name>/schedule-cwd   # fixed cwd; chown wactl; gitignored
+# (no SCHEDULE_PROJECT_DIR — the runner cwds into each schedule's own folder,
+#  giving per-schedule session binding for free; context.md/log.md are local)
 ```
 
 The installer prints *"Scheduled Messages: not configured — see
@@ -563,11 +564,16 @@ docs/scheduled-messages-setup.md"* when `TELEGRAM_*` is blank.
    (spread into `TOOLS[]`); atomic writes; `schedule_send` with recipient-pinning
    / `maxMsgs` / per-day ceiling / per-run-token validation (pure `checkSendAllowed`);
    model allowlist; delete-to-trash. 27-check logic test green. Testable via Claude.ai.
-2. **Runner + cron tick + `wactl` user** — provision the unprivileged `wactl`
-   user; `schedule-run.sh` (as `sudo -u wactl`, flock, preflight,
-   dryRun-via-tool-omission), `schedule-tick.sh` enumerating `instances.json`,
-   `/etc/cron.d/wactl-schedules`; dryRun end-to-end (drafts to log.md, no send).
-   Prove a session resumes across ticks. Confine `Read`/`Edit` to the schedule dir.
+2. **Runner + cron tick + `wactl` user** — ✅ **DONE**.
+   `server/src/schedules/{cron,runner,due}.ts` (cron matcher, run orchestration,
+   due-detection) + `scripts/schedule-{run,tick}.sh` + `install.sh` wiring (wactl
+   system user, shared `/etc/cron.d/wactl-schedules`, setgid group-shared
+   schedule dirs, `.env` keys, claude preflight). dryRun enforced by tool
+   omission; per-schedule cwd + flock; `sudo -u wactl` (skipped if user absent).
+   **Session-resume-across-runs proven** via a live 2-run smoke test (codeword
+   recalled from session history alone). 29 + 31 unit checks green.
+   Still TODO in Phase 2 hardening: `Read`/`Edit` deny-hook to *confine* (not
+   just localize) file access to the schedule dir.
 3. **Session lifecycle** — seeding rule, hash-based re-read, safety-ceiling +
    `/compact` rotation, archive.
 4. **`wactl-telegram` service** — raw-https Bot API long-poll; topic

@@ -488,6 +488,13 @@ NTFY_TOPIC=${NTFY_TOPIC}
 NTFY_SERVER=${NTFY_SERVER}
 SERVER_HOSTNAME=${HOSTNAME}
 AUTO_UPDATE=true
+# --- Scheduled Messages (blank = feature dormant; see docs/scheduled-messages-setup.md) ---
+ANTHROPIC_API_KEY=
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_GROUP_ID=
+TELEGRAM_ALLOWED_USER_IDS=
+SCHEDULE_COMPACT_TOKEN_THRESHOLD=450000
+SCHEDULE_DEFAULT_MODEL=sonnet[1m]
 EOF
 
 # Create systemd services
@@ -585,6 +592,34 @@ if [ "$FIRST_RUN" = true ]; then
   # Upstream watcher — heads-up ntfy when whatsmeow / mautrix-whatsapp ship
   # protocol-relevant changes. Offset from update cron so they don't overlap.
   echo "0 7 * * * root /opt/wactl/scripts/upstream-watch.sh >> /var/log/wactl-upstream.log 2>&1" > /etc/cron.d/wactl-upstream-watch
+
+  # --- Scheduled Messages: unprivileged runner user + shared tick cron ---
+  # The runner executes claude as this dedicated user (never root) so an LLM with
+  # send egress + untrusted inbound content can't reach root (spec §13.2).
+  if ! id wactl >/dev/null 2>&1; then
+    useradd --system --create-home --shell /usr/sbin/nologin wactl || true
+  fi
+  # The claude CLI is a runtime prerequisite; we can't complete its interactive
+  # login for the operator, so warn loudly if it's absent.
+  if ! command -v claude >/dev/null 2>&1; then
+    echo "  [!] Scheduled Messages needs the 'claude' CLI installed and logged in as the 'wactl' user."
+    echo "      Install Claude Code, then run once:  sudo -u wactl claude   (complete the login)."
+  fi
+  # A single shared tick dispatches due schedules across every instance.
+  echo "* * * * * root /opt/wactl/scripts/schedule-tick.sh >> /var/log/wactl-schedule.log 2>&1" > /etc/cron.d/wactl-schedules
+fi
+
+# Schedules dirs are written by BOTH the root server and the wactl runner, so
+# make them group-shared (setgid → new files inherit the wactl group). Runs every
+# install so newly-added instances get set up too.
+if id wactl >/dev/null 2>&1; then
+  for inst_dir in "$INSTALL_DIR"/instances/*/; do
+    [ -d "$inst_dir" ] || continue
+    sched_dir="${inst_dir%/}/data/schedules"
+    mkdir -p "$sched_dir"
+    chgrp -R wactl "$sched_dir" 2>/dev/null || true
+    chmod -R g+rws "$sched_dir" 2>/dev/null || true
+  done
 fi
 
 # Firewall: open 80/443 for Caddy, close direct instance ports

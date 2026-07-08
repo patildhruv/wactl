@@ -40,7 +40,8 @@ export interface Schedule {
   watch: ScheduleWatch | null;
   snoozeUntil: number | null;   // suppress runs until this epoch (seconds)
   telegramTopicId: number | null; // reconciled by wactl-telegram
-  contextHash: string;          // sha256 of context.md — detect out-of-band edits
+  contextHash: string;          // sha256 of context.md as the session last saw it
+  sessionStarted: boolean;      // false until the first run creates the transcript; reset on rotate
   lastRun: number | null;
   createdAt: number;
 }

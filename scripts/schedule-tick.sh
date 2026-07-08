@@ -1,0 +1,32 @@
+#!/bin/bash
+# wactl schedule tick — cron entrypoint, runs every minute as root.
+#
+# For each instance in instances.json, asks the Node `due` helper which schedules
+# should fire this minute (cron cadence or a pending .trigger) and launches the
+# runner for each. A single shared cron drop-in drives all instances — no
+# per-schedule crontab writes (see docs/scheduled-messages-spec.md §3).
+set -euo pipefail
+
+INSTALL_DIR="${INSTALL_DIR:-/opt/wactl}"
+INSTANCES="$INSTALL_DIR/instances.json"
+DUE="$INSTALL_DIR/server/dist/schedules/due.js"
+
+[ -f "$INSTANCES" ] || exit 0
+[ -f "$DUE" ] || exit 0
+
+for inst in $(jq -r '.instances | keys[]' "$INSTANCES"); do
+  env_file="$INSTALL_DIR/instances/$inst/.env"
+  [ -f "$env_file" ] || continue
+  data_dir="$(grep -E '^DATA_DIR=' "$env_file" | head -1 | cut -d= -f2-)"
+  [ -n "$data_dir" ] || continue
+  [ -d "$data_dir/schedules" ] || continue
+
+  # Fire each due schedule in the background; per-schedule flock (in the runner)
+  # prevents overlap of the SAME schedule across ticks.
+  while IFS= read -r slug; do
+    [ -n "$slug" ] || continue
+    "$INSTALL_DIR/scripts/schedule-run.sh" "$inst" "$slug" cron >/dev/null 2>&1 &
+  done < <(node "$DUE" "$data_dir" 2>/dev/null)
+done
+
+wait
