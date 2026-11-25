@@ -56,6 +56,7 @@ export const GENERAL_COMMANDS = new Set(["new", "list", "help", "delete"]);
 export type Action =
   | { kind: "ignore"; reason: string }
   | { kind: "general_command"; command: string; args: string; msg: TgMessage }
+  | { kind: "orchestrator_message"; text: string; msg: TgMessage }
   | { kind: "topic_command"; command: string; args: string; threadId: number; msg: TgMessage }
   | { kind: "topic_message"; text: string; threadId: number; msg: TgMessage };
 
@@ -75,7 +76,13 @@ export function routeUpdate(update: TgUpdate): Action {
     if (parsed && GENERAL_COMMANDS.has(parsed.command)) {
       return { kind: "general_command", command: parsed.command, args: parsed.args, msg };
     }
-    return { kind: "ignore", reason: "non-lifecycle message in General topic" };
+    // Anything else in General — free text, an attachment, or an unknown command —
+    // goes to the orchestrator session, which can study chats and manage schedules.
+    const hasMedia = !!(msg.photo?.length || msg.document);
+    if (msg.text || hasMedia) {
+      return { kind: "orchestrator_message", text: msg.text || msg.caption || "", msg };
+    }
+    return { kind: "ignore", reason: "empty message in General topic" };
   }
 
   if (parsed) {

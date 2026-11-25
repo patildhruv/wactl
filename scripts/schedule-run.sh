@@ -22,7 +22,12 @@ ENV_FILE="$INSTALL_DIR/instances/$instance/.env"
 [ -f "$ENV_FILE" ] || { echo "no .env for instance '$instance'" >&2; exit 1; }
 
 # Read only the vars we need (don't source the whole .env into our shell).
-get() { grep -E "^$1=" "$ENV_FILE" | head -1 | cut -d= -f2-; }
+# The trailing `|| true` is load-bearing: under `set -euo pipefail`, a key that
+# is ABSENT from .env makes grep exit 1, which pipefail propagates to the
+# `VAR=$(get …)` assignment and `set -e` would then kill the script silently.
+# Optional keys (e.g. ANTHROPIC_API_KEY when a gateway is used instead) must
+# simply come back empty, not abort the run.
+get() { grep -E "^$1=" "$ENV_FILE" | head -1 | cut -d= -f2- || true; }
 DATA_DIR="$(get DATA_DIR)"
 MCP_PORT="$(get MCP_PORT)"
 MCP_API_KEY="$(get MCP_API_KEY)"

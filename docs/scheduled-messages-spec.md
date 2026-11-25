@@ -512,6 +512,40 @@ able to steer it. Mitigations, in priority order:
   the shell runner and has a wrong-for-this Click URL + 10-min debounce.
 - WhatsApp ToS: keep cadence human and volume low; see `WHATSAPP-TOS.md`.
 
+### 13.5 Permissions split by who is driving the turn
+
+The guardrails in §13.1 exist because an **unattended** agent reads untrusted
+third-party text while holding send egress. When the **operator is present**
+(`event=telegram` — they typed the instruction in the Telegram topic), those
+guardrails would only prevent the assistant from doing what the operator just
+asked; the operator sending via the agent is equivalent to sending it
+themselves. So `selectTools(schedule, event)` allowlists per turn:
+
+| toolset | cron / watch / runnow | telegram (interactive) |
+|---|---|---|
+| BASE (read/study/web/Bash) | yes | yes |
+| `schedule_send` (pinned, token, caps) | when live | when live |
+| `send_message` / `send_file` (direct, unpinned) | never | yes |
+| self-mgmt (`schedule_get/update/set_context/run_now/compact/reset`) | never | yes |
+| fleet (`schedule_create/list/delete`) | never | orchestrator only |
+
+- **`runnow` is deliberately autonomous** — its purpose is to rehearse the
+  unattended run exactly; an interactive send is just a free-text ask away.
+- **The orchestrator is interactive by design** and gets direct send on
+  operator turns; an autonomous fire of it (e.g. a watch set on `__general__`)
+  drops to BASE only.
+- The self-mgmt scoping is **allowlist + prompt only**: schedule tools take a
+  slug argument and the MCP server cannot tell which schedule's runner is
+  calling (one shared API key), so a topic agent could technically address
+  another slug. Accepted while the operator is present; per-run slug-scoped
+  auth is the follow-up if this ever needs hardening.
+- Residual accepted risk: an interactive turn can read untrusted WhatsApp/web
+  content while holding an unpinned send tool, and the operator sees actions
+  after the fact. Mitigations: untrusted-data markers stay on, the capability
+  note instructs "send only what the operator asks for", and the agent's reply
+  lands in the topic as an audit trail. **Do not extend direct send to
+  cron/watch turns.**
+
 ## 14. Auth & runtime
 
 - Bare-metal / systemd instance only (the `install.sh` path). System cron

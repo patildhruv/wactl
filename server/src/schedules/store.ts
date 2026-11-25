@@ -32,6 +32,17 @@ const MODEL_ALLOWLIST = (process.env.SCHEDULE_MODEL_ALLOWLIST || DEFAULT_MODEL)
 const DEFAULT_MAX_MSGS = intEnv("SCHEDULE_DEFAULT_MAX_MSGS", 1);
 const DEFAULT_PER_DAY = intEnv("SCHEDULE_DEFAULT_PER_DAY", 3);
 
+/**
+ * Reserved pseudo-schedule backing the Telegram General topic's orchestrator
+ * session. It reuses the schedule storage/session machinery (own sessionId,
+ * context.md, transcript archive) but is NOT a real schedule: it never sends,
+ * has no cron/watch, and is filtered out of listSchedules() so it never appears
+ * in /list, gets a reconciled topic, or fires from cron/watch. The runner gives
+ * it the schedule-management + WhatsApp-read toolset instead of a send tool.
+ */
+export const ORCHESTRATOR_SLUG = "__general__";
+const RESERVED_PREFIX = "__";
+
 function intEnv(name: string, dflt: number): number {
   const v = parseInt(process.env[name] || "", 10);
   return Number.isFinite(v) ? v : dflt;
@@ -71,9 +82,47 @@ function logPath(slug: string): string {
 
 // --- Atomic IO -------------------------------------------------------------
 
+// Schedule storage has TWO writers in group `wactl`: the root MCP server and
+// the wactl runner/telegram service. Directories must be group-writable +
+// setgid so either user can create files (which inherit the wactl group); files
+// must be group-writable for in-place rewrites (context.md, log.md) by the other
+// user. The mode passed to mkdir()/open() is masked by the process umask — 022
+// on the root server silently strips the group-write bit, which is exactly the
+// bit the second writer needs — so we force the mode with chmod(), which ignores
+// the umask. chmod only succeeds for the file's owner, but each writer chmods
+// only paths it just created, so that invariant holds (chmodOwn tolerates the
+// not-owner case defensively).
+const DIR_MODE = 0o2770;
+const FILE_MODE = 0o660;
+
+function mkdirShared(dir: string): void {
+  fs.mkdirSync(dir, { recursive: true, mode: DIR_MODE });
+  try {
+    fs.chmodSync(dir, DIR_MODE); // undo the umask so the wactl group keeps write
+  } catch {
+    // Pre-existing dir owned by the OTHER writer (e.g. the wactl runner touching
+    // the root-created schedules root) — chmod EPERMs, but its owner already set
+    // these bits on create, so nothing to do.
+  }
+}
+
+function chmodOwn(file: string): void {
+  try {
+    fs.chmodSync(file, FILE_MODE);
+  } catch {
+    // Owned by the other writer, which already set the mode on create.
+  }
+}
+
+function writeFileShared(file: string, data: string): void {
+  fs.writeFileSync(file, data);
+  chmodOwn(file);
+}
+
 function writeAtomic(file: string, data: string): void {
   const tmp = `${file}.${process.pid}.${uuidv4().slice(0, 8)}.tmp`;
-  fs.writeFileSync(tmp, data, { mode: 0o660 });
+  fs.writeFileSync(tmp, data);
+  fs.chmodSync(tmp, FILE_MODE); // we own tmp; force the mode past the umask
   fs.renameSync(tmp, file);
 }
 
@@ -155,11 +204,12 @@ export function createSchedule(
   const model = input.model || DEFAULT_MODEL;
   validateModel(model);
 
-  fs.mkdirSync(schedulesRoot(), { recursive: true, mode: 0o2770 });
+  mkdirShared(schedulesRoot());
   const slug = slugify(input.goal);
   const dir = scheduleDir(slug);
-  fs.mkdirSync(dir, { recursive: true, mode: 0o2770 });
-  fs.mkdirSync(path.join(dir, "sessions", "archive"), { recursive: true, mode: 0o2770 });
+  mkdirShared(dir);
+  mkdirShared(path.join(dir, "sessions"));
+  mkdirShared(path.join(dir, "sessions", "archive"));
 
   const ts = nowSec();
   const schedule: Schedule = {
@@ -186,11 +236,94 @@ export function createSchedule(
   };
 
   const initialContext = input.context?.trim() ? input.context : seedContextMd(schedule);
-  fs.writeFileSync(contextPath(slug), initialContext, { mode: 0o660 });
+  writeFileShared(contextPath(slug), initialContext);
   schedule.contextHash = sha256File(contextPath(slug));
 
   writeJsonAtomic(schedulePath(slug), schedule);
   writeJsonAtomic(sendStatePath(slug), {
+    day: utcDay(ts),
+    sentToday: 0,
+    activeRun: null,
+  } as SendState);
+
+  return schedule;
+}
+
+function seedOrchestratorMd(): string {
+  return `# Orchestrator (Telegram General topic)
+
+## Role
+You are the orchestrator for this wactl instance's WhatsApp scheduled messages.
+The operator talks to you here, in the General topic, across a persistent
+session. You help them design, create, inspect, adjust, pause, and delete
+scheduled-message jobs — and you can study a contact's WhatsApp history first to
+inform how a schedule should behave.
+
+## What you can do
+- Study chats (read-only): list_chats, get_chat, get_message, search_messages,
+  search_contacts, resolve_jid, list_group_participants, and download_media
+  (then Read the downloaded file to view an image/PDF).
+- Manage schedules: schedule_create, schedule_list, schedule_get,
+  schedule_update, schedule_set_context, schedule_delete, schedule_run_now,
+  schedule_compact, schedule_reset.
+- You do NOT send WhatsApp messages yourself. All sending happens through a
+  schedule, which pins its own recipient and enforces dryRun + per-run/day caps.
+  New schedules start in dryRun — remind the operator to flip it off when ready.
+  Each new schedule gets its own Telegram topic automatically.
+
+## Operator preferences
+<record how this operator likes schedules set up: tone, cadence, defaults>
+
+## Schedules I manage
+<keep a running gist of which schedules exist and what each is for>
+
+## Pending
+<anything you're mid-way through with the operator>
+`;
+}
+
+/**
+ * Lazily materialize the reserved orchestrator pseudo-schedule (idempotent).
+ * Called by the Telegram service the first time the operator talks in General.
+ */
+export function ensureOrchestrator(): Schedule {
+  const p = schedulePath(ORCHESTRATOR_SLUG);
+  if (fs.existsSync(p)) return readJson<Schedule>(p);
+
+  mkdirShared(schedulesRoot());
+  const dir = scheduleDir(ORCHESTRATOR_SLUG);
+  mkdirShared(dir);
+  mkdirShared(path.join(dir, "sessions"));
+  mkdirShared(path.join(dir, "sessions", "archive"));
+
+  const ts = nowSec();
+  const schedule: Schedule = {
+    slug: ORCHESTRATOR_SLUG,
+    sessionId: uuidv4(),
+    model: DEFAULT_MODEL,
+    toIdentity: "(orchestrator)", // never used — the orchestrator has no send tool
+    toJid: "",
+    toResolvedAt: ts,
+    cron: null,
+    goal: "Orchestrate the operator's WhatsApp scheduled-message jobs.",
+    enabled: true,
+    dryRun: true, // belt-and-suspenders; it has no send tool regardless
+    maxMsgs: 0,
+    perDayMax: 0,
+    checkMessages: false, // its toolset is assigned specially in the runner
+    watch: null,
+    snoozeUntil: null,
+    telegramTopicId: 1, // it "lives" in the General topic
+    contextHash: "",
+    sessionStarted: false,
+    lastRun: null,
+    createdAt: ts,
+  };
+
+  writeFileShared(contextPath(ORCHESTRATOR_SLUG), seedOrchestratorMd());
+  schedule.contextHash = sha256File(contextPath(ORCHESTRATOR_SLUG));
+  writeJsonAtomic(schedulePath(ORCHESTRATOR_SLUG), schedule);
+  writeJsonAtomic(sendStatePath(ORCHESTRATOR_SLUG), {
     day: utcDay(ts),
     sentToday: 0,
     activeRun: null,
@@ -204,7 +337,9 @@ export function listSchedules(): Schedule[] {
   if (!fs.existsSync(root)) return [];
   return fs
     .readdirSync(root, { withFileTypes: true })
-    .filter((e) => e.isDirectory() && !e.name.startsWith("."))
+    // Skip dotfiles (.trash) and reserved pseudo-schedules (the orchestrator) —
+    // callers of listSchedules() only ever want real, user-created schedules.
+    .filter((e) => e.isDirectory() && !e.name.startsWith(".") && !e.name.startsWith(RESERVED_PREFIX))
     .map((e) => e.name)
     .filter((slug) => fs.existsSync(schedulePath(slug)))
     .map((slug) => readJson<Schedule>(schedulePath(slug)));
@@ -229,7 +364,7 @@ export function getContext(slug: string): string {
  */
 export function setContext(slug: string, content: string): { hash: string } {
   getSchedule(slug); // existence check
-  fs.writeFileSync(contextPath(slug), content, { mode: 0o660 });
+  writeFileShared(contextPath(slug), content);
   return { hash: sha256File(contextPath(slug)) };
 }
 
@@ -276,10 +411,60 @@ export function deleteSchedule(slug: string): { archivedTo: string } {
   const dir = scheduleDir(slug);
   if (!fs.existsSync(dir)) throw new Error(`no such schedule: ${slug}`);
   const trash = path.join(schedulesRoot(), ".trash");
-  fs.mkdirSync(trash, { recursive: true });
+  mkdirShared(trash);
   const dest = path.join(trash, `${slug}-${nowSec()}`);
   fs.renameSync(dir, dest);
   return { archivedTo: dest };
+}
+
+/** A deleted schedule whose Telegram topic is still open. */
+export interface TrashedTopic {
+  dir: string; // the archived folder, so the caller can mark it reaped
+  slug: string;
+  telegramTopicId: number;
+}
+
+/** Dropped beside a trashed schedule once its topic has been dealt with. */
+const TOPIC_CLOSED_MARKER = ".topic-closed";
+
+/**
+ * Trashed schedules that still carry a topic id and haven't been reaped yet.
+ *
+ * deleteSchedule() is a plain rename, so the archived schedule.json keeps its
+ * telegramTopicId — which is exactly what the telegram service needs to close
+ * the topic after the fact (the MCP delete path never closes one; only the
+ * /delete command does). A malformed entry is skipped, never thrown: one bad
+ * archive folder must not abort the whole sweep.
+ */
+export function listTrashedTopics(): TrashedTopic[] {
+  const trash = path.join(schedulesRoot(), ".trash");
+  if (!fs.existsSync(trash)) return [];
+  const out: TrashedTopic[] = [];
+  for (const e of fs.readdirSync(trash, { withFileTypes: true })) {
+    if (!e.isDirectory()) continue;
+    const dir = path.join(trash, e.name);
+    if (fs.existsSync(path.join(dir, TOPIC_CLOSED_MARKER))) continue;
+    const p = path.join(dir, "schedule.json");
+    if (!fs.existsSync(p)) continue;
+    try {
+      const s = readJson<Schedule>(p);
+      if (typeof s.telegramTopicId === "number") {
+        out.push({ dir, slug: s.slug, telegramTopicId: s.telegramTopicId });
+      }
+    } catch {
+      // Unreadable archive entry — leave it be.
+    }
+  }
+  return out;
+}
+
+/**
+ * Record that a trashed schedule's topic has been closed, so the sweep stops
+ * retrying it. A marker file rather than an edit to the archived schedule.json:
+ * the trash is an audit record and should stay byte-identical to what was deleted.
+ */
+export function markTopicClosed(dir: string): void {
+  writeFileShared(path.join(dir, TOPIC_CLOSED_MARKER), `${nowSec()}\n`);
 }
 
 /** Drop a .trigger file the cron tick will pick up (spec §5). */
@@ -419,8 +604,9 @@ export function rotateSession(slug: string): RotateResult {
   const live = liveTranscriptPath(slug, oldSessionId);
   if (fs.existsSync(live)) {
     const dest = path.join(scheduleDir(slug), "sessions", "archive", `${oldSessionId}-${nowSec()}.jsonl`);
-    fs.mkdirSync(path.dirname(dest), { recursive: true, mode: 0o2770 });
+    mkdirShared(path.dirname(dest));
     fs.copyFileSync(live, dest);
+    chmodOwn(dest);
     archivedTo = dest;
   }
 
@@ -513,5 +699,6 @@ export function authorizeSend(slug: string, token: string): { toJid: string } {
 /** Record a sent messageId into the schedule's log.md (append-only, spec §13.4). */
 export function appendLog(slug: string, line: string): void {
   const stamp = new Date().toISOString();
-  fs.appendFileSync(logPath(slug), `- ${stamp} ${line}\n`, { mode: 0o660 });
+  fs.appendFileSync(logPath(slug), `- ${stamp} ${line}\n`);
+  chmodOwn(logPath(slug));
 }

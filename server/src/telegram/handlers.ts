@@ -20,6 +20,7 @@ import {
   requestRunNow,
   requestRotation,
   validateModel,
+  ORCHESTRATOR_SLUG,
 } from "../schedules/store";
 import { Schedule } from "../schedules/types";
 
@@ -30,6 +31,48 @@ export function esc(s: string): string {
 const code = (s: string) => `<code>${esc(s)}</code>`;
 const b = (s: string) => `<b>${esc(s)}</b>`;
 const pre = (s: string) => `<pre>${esc(s)}</pre>`;
+
+/**
+ * Convert the agent's freeform Markdown into the small HTML subset Telegram
+ * renders (<b> <i> <code> <pre> <a> <blockquote>). Agent replies are Markdown;
+ * sent as plain text the operator sees raw `**` and backtick markers. Code
+ * spans/blocks are pulled out first (so their contents aren't mangled), the rest
+ * is HTML-escaped, then inline markers become tags. Unrecognized markup simply
+ * survives as escaped text. safeSend still falls back to plain on any HTML error.
+ */
+export function mdToTelegramHtml(md: string): string {
+  const blocks: string[] = [];
+  const spans: string[] = [];
+  const B = "\uF8FF"; // private-use sentinels — won't collide with real text
+  const C = "\uF8FE";
+  let s = md;
+  // Fenced code blocks first (strip the optional language, keep the body).
+  s = s.replace(/```[^\n]*\n?([\s\S]*?)```/g, (_m, codeBody) => {
+    blocks.push(String(codeBody).replace(/\n$/, ""));
+    return `${B}${blocks.length - 1}${B}`;
+  });
+  // Inline code.
+  s = s.replace(/`([^`\n]+)`/g, (_m, codeBody) => {
+    spans.push(String(codeBody));
+    return `${C}${spans.length - 1}${C}`;
+  });
+  // Escape the remaining prose (so agent text can't inject HTML).
+  s = esc(s);
+  // Links [text](url) — url already escaped as part of the prose.
+  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_m, t, u) => `<a href="${u}">${t}</a>`);
+  // Bold (** or __), then italic (single * or _), then headings → bold.
+  s = s.replace(/\*\*([^\n]+?)\*\*/g, "<b>$1</b>");
+  s = s.replace(/__([^\n]+?)__/g, "<b>$1</b>");
+  s = s.replace(/(^|[^*])\*(?!\s)([^*\n]+?)\*/g, "$1<i>$2</i>");
+  s = s.replace(/^\s{0,3}#{1,6}\s+(.+?)\s*$/gm, "<b>$1</b>");
+  // Blockquotes ("> " is "&gt; " after escaping) and bullets.
+  s = s.replace(/^\s{0,3}&gt;\s?(.*)$/gm, "<blockquote>$1</blockquote>");
+  s = s.replace(/^(\s*)[-*+]\s+/gm, "$1• ");
+  // Reinsert protected code as tags (escaping their contents now).
+  s = s.replace(new RegExp(C + "(\\d+)" + C, "g"), (_m, i) => `<code>${esc(spans[+i])}</code>`);
+  s = s.replace(new RegExp(B + "(\\d+)" + B, "g"), (_m, i) => `<pre>${esc(blocks[+i])}</pre>`);
+  return s;
+}
 
 /** The command menu (autocomplete on "/"). Union of general + topic commands. */
 export const BOT_COMMANDS: { command: string; description: string }[] = [
@@ -61,6 +104,38 @@ export function scheduleForTopic(threadId: number): Schedule | null {
   return listSchedules().find((s) => s.telegramTopicId === threadId) || null;
 }
 
+/**
+ * Which topic ids belong to deleted schedules and are safe to close.
+ *
+ * Pure set arithmetic so the guards are testable without touching Telegram —
+ * closing the wrong topic is destructive-ish (reversible, but visible to the
+ * operator), so each exclusion below is deliberate:
+ *  - id <= 1: topic 1 is the forum's General topic. It is not a per-schedule
+ *    topic, Telegram won't close it, and the orchestrator lives there.
+ *  - orchestrator slug: a reserved pseudo-schedule, never a disposable topic.
+ *  - any id a live schedule still holds: a slug can be deleted and recreated,
+ *    and the trash keeps the OLD record — so never close an id still in use.
+ */
+export function orphanedTopicIds(
+  liveTopicIds: (number | null | undefined)[],
+  trashed: { slug: string; telegramTopicId: number }[]
+): number[] {
+  const live = new Set(liveTopicIds.filter((n): n is number => typeof n === "number"));
+  const seen = new Set<number>();
+  const out: number[] = [];
+  for (const t of trashed) {
+    const id = t.telegramTopicId;
+    if (typeof id !== "number" || !Number.isFinite(id)) continue;
+    if (id <= 1) continue;
+    if (t.slug === ORCHESTRATOR_SLUG) continue;
+    if (live.has(id)) continue;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+  }
+  return out;
+}
+
 /** Parse a human duration ("2h", "30m", "1d", "45") into seconds. */
 export function parseDuration(s: string): number | null {
   const m = s.trim().match(/^(\d+)\s*([smhd]?)$/i);
@@ -87,6 +162,61 @@ export type HandlerResult = { kind: "reply"; text: string } | RunRequest;
 
 function reply(text: string): HandlerResult {
   return { kind: "reply", text };
+}
+
+/** A finished `schedule-run.sh` process, as the Telegram service sees it. */
+export interface RunnerOutcome {
+  code: number | null; // null = killed by a signal
+  stdout: string;
+  stderr: string;
+}
+
+/** Cap on error text pasted into a Telegram message; the journal gets the whole thing. */
+const RUNNER_ERR_MAX = 400;
+
+/** Last non-empty line of a stream, trimmed and capped. */
+function lastLine(s: string, max = RUNNER_ERR_MAX): string {
+  const line = s.split("\n").map((l) => l.trim()).filter(Boolean).pop() || "";
+  return line.length > max ? `${line.slice(0, max)}…` : line;
+}
+
+/**
+ * Decide what the operator sees when a runner process finishes.
+ *
+ * The runner prints one JSON line on success and, on failure, exits non-zero
+ * with the reason on stderr. The service used to read stdout ONLY, so every
+ * failure — dead gateway, retired model, crashed script — rendered as the bare
+ * "(done)" fallback with nothing logged; that silence hid a multi-day outage.
+ * A non-zero exit or unreadable stdout must now surface to the topic AND come
+ * back as a `failure` string for the caller to log. `failure` is null on success.
+ */
+export function formatRunnerOutcome(o: RunnerOutcome): { text: string; failure: string | null } {
+  const stdout = (o.stdout || "").trim();
+  const stderr = (o.stderr || "").trim();
+  const failed = o.code !== 0;
+
+  let parsed: { reply?: unknown; result?: unknown } | null = null;
+  if (stdout) {
+    try {
+      parsed = JSON.parse(stdout.split("\n").pop() || "");
+    } catch {
+      parsed = null; // fall through to the failure path below
+    }
+  }
+
+  if (!failed && parsed) {
+    const text = parsed.reply || parsed.result;
+    if (text) return { text: String(text), failure: null };
+    // Ran fine with nothing to say: a compact/reset, or a watch tick with no new inbound.
+    return { text: "(done)", failure: null };
+  }
+
+  const why = lastLine(stderr) || lastLine(stdout) || "no output on either stream";
+  const label = failed ? `exit ${o.code === null ? "signal" : o.code}` : "unreadable output";
+  return {
+    text: `⚠️ run failed (${label}): ${why}`,
+    failure: `${label} — stderr: ${stderr || "(empty)"} | stdout: ${stdout || "(empty)"}`,
+  };
 }
 
 function fmtStatus(s: Schedule): string {
@@ -223,5 +353,5 @@ export const GENERAL_HELP = [
   `${code("/list")}  — all schedules`,
   `${code("/delete <slug>")}  — delete a schedule + close its topic`,
   "",
-  "Each schedule gets its own topic; manage it there.",
+  "Or just <i>talk to me here</i> — I'm the orchestrator: I can study a contact's chats, then design and create schedules for you. Each gets its own topic to manage it.",
 ].join("\n");

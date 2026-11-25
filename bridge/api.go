@@ -631,8 +631,19 @@ func (b *BridgeState) handleLogout(w http.ResponseWriter, r *http.Request) {
 	b.Connected = false
 	b.LoggedIn = false
 	b.Account = ""
+	b.QRCode = ""
 	b.mu.Unlock()
 	jsonResp(w, http.StatusOK, map[string]bool{"ok": true})
+
+	// Client.Logout deletes the device but dispatches no *events.LoggedOut, so
+	// nothing else here would notice. Without this the bridge sits on a deleted
+	// device that can never reconnect or produce a QR. Gate on Deleted rather
+	// than on Logout's error: it can fail after the delete lands, and it declines
+	// to delete anything when we weren't logged in to begin with.
+	if b.Client.Store.Deleted {
+		b.notifyCallback("logged_out", nil)
+		b.restartForFreshDevice("Session deleted by operator logout")
+	}
 }
 
 // --- Internal helpers ---

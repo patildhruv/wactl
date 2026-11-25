@@ -6,6 +6,7 @@
 # runner for each. A single shared cron drop-in drives all instances — no
 # per-schedule crontab writes (see docs/scheduled-messages-spec.md §3).
 set -euo pipefail
+export TZ="${TZ:-Asia/Kolkata}"  # evaluate cron cadence in IST
 
 INSTALL_DIR="${INSTALL_DIR:-/opt/wactl}"
 INSTANCES="$INSTALL_DIR/instances.json"

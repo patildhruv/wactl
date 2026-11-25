@@ -22,9 +22,22 @@ import {
   GENERAL_HELP,
   BOT_COMMANDS,
   esc,
+  mdToTelegramHtml,
+  formatRunnerOutcome,
+  orphanedTopicIds,
 } from "./handlers";
 import { TelegramError } from "./api";
-import { listSchedules, getSchedule, createSchedule, deleteSchedule } from "../schedules/store";
+import {
+  listSchedules,
+  getSchedule,
+  createSchedule,
+  deleteSchedule,
+  ensureOrchestrator,
+  listTrashedTopics,
+  markTopicClosed,
+  ORCHESTRATOR_SLUG,
+  TrashedTopic,
+} from "../schedules/store";
 import { resolveRecipient } from "../schedules/recipient";
 import { BridgeClient } from "../bridge/client";
 
@@ -124,6 +137,25 @@ async function handleUpdate(
       return;
     case "general_command":
       return handleGeneral(tg, bridge, groupId, action.command, action.args, msg.message_thread_id);
+    case "orchestrator_message": {
+      // Free text / attachment in General → the persistent orchestrator session.
+      const sched = ensureOrchestrator();
+      const att = await gatherAttachments(tg, msg);
+      let text = action.text;
+      if (att.paths.length) {
+        text =
+          `[The user attached ${att.paths.length} file(s). Read each path below to view its contents ` +
+          `(you can Read images and PDFs):]\n${att.paths.join("\n")}` +
+          (text ? `\n\nTheir message: ${text}` : "");
+      }
+      const res = handleTopicMessage(sched, text || "(no text)");
+      try {
+        await fulfil(tg, groupId, msg.message_thread_id, res);
+      } finally {
+        if (att.dir) fs.rmSync(att.dir, { recursive: true, force: true });
+      }
+      return;
+    }
     case "topic_command": {
       const sched = scheduleForTopic(action.threadId);
       if (!sched) return void safeSend(tg, groupId, "No schedule is bound to this topic.", action.threadId);
@@ -216,14 +248,15 @@ async function safeSend(tg: TelegramClient, chatId: number, text: string, thread
   }
 }
 
-/** Post a reply, or run the runner (with a live typing indicator) and post its result. */
-async function fulfil(tg: TelegramClient, groupId: number, threadId: number, res: ReturnType<typeof handleTopicCommand>): Promise<void> {
+/** Post a reply, or run the runner (with a live typing indicator) and post its result.
+ *  threadId is undefined for the General topic (orchestrator). */
+async function fulfil(tg: TelegramClient, groupId: number, threadId: number | undefined, res: ReturnType<typeof handleTopicCommand>): Promise<void> {
   if (res.kind === "reply") {
     await safeSend(tg, groupId, res.text, threadId);
     return;
   }
-  // RunRequest — ack + keep a "typing…" indicator alive while the agent runs.
-  await safeSend(tg, groupId, res.ack, threadId);
+  // RunRequest — no textual ack (the live "typing…" indicator already signals
+  // work is happening). Keep the indicator alive until the agent replies.
   tg.sendChatAction(groupId, "typing", threadId);
   const typing = setInterval(() => tg.sendChatAction(groupId, "typing", threadId), 4500);
   let out: string;
@@ -232,8 +265,25 @@ async function fulfil(tg: TelegramClient, groupId: number, threadId: number, res
   } finally {
     clearInterval(typing);
   }
-  // Agent output is freeform (may contain <, >, markdown) → send plain.
-  await safeSend(tg, groupId, out || "(no reply)", threadId, false);
+  await sendAgentText(tg, groupId, threadId, out || "(no reply)");
+}
+
+/**
+ * Send freeform agent output: render its Markdown into Telegram HTML so `**bold**`
+ * and backtick-code don't show as raw markers. Falls back to the RAW text (not the
+ * half-built HTML) if Telegram rejects the markup — never tag soup, never silence.
+ */
+async function sendAgentText(tg: TelegramClient, chatId: number, threadId: number | undefined, text: string): Promise<void> {
+  try {
+    await tg.sendMessage(chatId, mdToTelegramHtml(text), threadId, "HTML");
+  } catch (e) {
+    if (e instanceof TelegramError) {
+      log("agent HTML send rejected, retrying plain:", e.description);
+      await tg.sendMessage(chatId, text, threadId).catch((e2) => log("plain send also failed:", String(e2)));
+    } else {
+      log("agent send failed:", String(e));
+    }
+  }
 }
 
 /**
@@ -267,7 +317,14 @@ async function gatherAttachments(
   return { paths, dir };
 }
 
-/** Spawn schedule-run.sh, capture the runner's JSON stdout, return the reply text. */
+/**
+ * Spawn schedule-run.sh and turn the finished process into operator-facing text.
+ *
+ * Both streams AND the exit code are captured: a failing run must never be
+ * silently rendered as "(done)" again (see formatRunnerOutcome). The verdict
+ * itself is computed by that pure function so it can be unit-tested; this
+ * function stays the impure shell that spawns, cleans up, and logs.
+ */
 function invokeRunner(req: RunRequest): Promise<string> {
   return new Promise((resolve) => {
     let payloadFile: string | undefined;
@@ -275,25 +332,90 @@ function invokeRunner(req: RunRequest): Promise<string> {
       payloadFile = path.join(os.tmpdir(), `wactl-tg-${Date.now()}-${Math.floor(process.hrtime()[1])}.txt`);
       fs.writeFileSync(payloadFile, req.payload, { mode: 0o600 });
     }
+    const cleanup = () => {
+      if (payloadFile) fs.rmSync(payloadFile, { force: true });
+      payloadFile = undefined; // spawn errors can fire 'error' without 'close'
+    };
     const args = [INSTANCE, req.slug, req.event, ...(payloadFile ? [payloadFile] : [])];
     const child = spawn(RUN_SCRIPT, args, { env: process.env });
     let stdout = "";
+    let stderr = "";
     child.stdout.on("data", (d) => (stdout += d));
-    child.on("close", () => {
-      if (payloadFile) fs.rmSync(payloadFile, { force: true });
-      try {
-        const j = JSON.parse(stdout.trim().split("\n").pop() || "{}");
-        resolve(j.reply || j.result || "(done)");
-      } catch {
-        resolve("(done)");
-      }
+    child.stderr.on("data", (d) => (stderr += d));
+    child.on("close", (code) => {
+      cleanup();
+      const { text, failure } = formatRunnerOutcome({ code, stdout, stderr });
+      if (failure) log(`runner FAILED ${req.slug} (${req.event}): ${failure}`);
+      resolve(text);
     });
-    child.on("error", (e) => resolve(`run failed: ${e.message}`));
+    child.on("error", (e) => {
+      cleanup();
+      log(`runner SPAWN FAILED ${req.slug} (${req.event}): ${String(e)}`);
+      resolve(`⚠️ run failed to start: ${e.message}`);
+    });
   });
 }
 
-/** Create a forum topic for any schedule missing one; write the id back. */
+/** Create a topic for any schedule missing one, and close topics left by deleted schedules. */
 async function reconcileTopics(tg: TelegramClient, groupId: number): Promise<void> {
+  await createMissingTopics(tg, groupId);
+  await reapOrphanTopics(tg, groupId);
+}
+
+/**
+ * Close topics whose schedule no longer exists.
+ *
+ * Only the /delete command closes a topic (handleGeneral); the schedule_delete
+ * MCP tool just archives the folder — despite its own description claiming the
+ * bot closes the topic. So every MCP deletion left its topic open forever, and
+ * nothing swept them. Reaping here, in the process that owns the Telegram
+ * client, covers EVERY deletion path (including a crash between delete and
+ * close, or a folder moved by hand) rather than patching only the one that
+ * leaked. Idempotent: a marker in the trash folder stops re-processing.
+ */
+async function reapOrphanTopics(tg: TelegramClient, groupId: number): Promise<void> {
+  let trashed: TrashedTopic[] = [];
+  try {
+    trashed = listTrashedTopics();
+  } catch (e) {
+    log("orphan sweep: trash scan failed:", String(e));
+    return;
+  }
+  if (!trashed.length) return;
+
+  const liveIds: (number | null)[] = listSchedules().map((s) => s.telegramTopicId);
+  try {
+    // listSchedules() filters the orchestrator out, so add its topic back by hand.
+    liveIds.push(getSchedule(ORCHESTRATOR_SLUG).telegramTopicId);
+  } catch {
+    // Orchestrator not seeded yet — the id <= 1 guard still protects General.
+  }
+
+  const closable = new Set(orphanedTopicIds(liveIds, trashed));
+  if (!closable.size) return;
+
+  for (const t of trashed) {
+    if (!closable.has(t.telegramTopicId)) continue;
+    try {
+      await tg.closeForumTopic(groupId, t.telegramTopicId);
+      markTopicClosed(t.dir);
+      log(`orphan sweep: closed topic ${t.telegramTopicId} (deleted schedule ${t.slug})`);
+    } catch (e) {
+      // An error_code means Telegram received the request and refused it (already
+      // closed, or the topic is gone) — retrying can't help, so mark it done. A
+      // transport failure carries no code: leave it for the next sweep.
+      if (e instanceof TelegramError && typeof e.code === "number") {
+        markTopicClosed(t.dir);
+        log(`orphan sweep: topic ${t.telegramTopicId} (${t.slug}) refused: ${e.description} — marking done`);
+      } else {
+        log(`orphan sweep: topic ${t.telegramTopicId} (${t.slug}) failed, will retry: ${String(e)}`);
+      }
+    }
+  }
+}
+
+/** Create a forum topic for any schedule missing one; write the id back. */
+async function createMissingTopics(tg: TelegramClient, groupId: number): Promise<void> {
   for (const s of listSchedules()) {
     if (s.telegramTopicId != null) continue;
     try {
