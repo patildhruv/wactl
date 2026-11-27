@@ -200,10 +200,11 @@ if [ "$REMOVE" = true ]; then
 
   # Stop and disable services
   echo "[1/4] Stopping services..."
-  systemctl stop "wactl-${NAME}-bridge" "wactl-${NAME}-server" 2>/dev/null || true
-  systemctl disable "wactl-${NAME}-bridge" "wactl-${NAME}-server" 2>/dev/null || true
+  systemctl stop "wactl-${NAME}-bridge" "wactl-${NAME}-server" "wactl-${NAME}-telegram" 2>/dev/null || true
+  systemctl disable "wactl-${NAME}-bridge" "wactl-${NAME}-server" "wactl-${NAME}-telegram" 2>/dev/null || true
   rm -f "/etc/systemd/system/wactl-${NAME}-bridge.service"
   rm -f "/etc/systemd/system/wactl-${NAME}-server.service"
+  rm -f "/etc/systemd/system/wactl-${NAME}-telegram.service"
   systemctl daemon-reload
 
   # Remove from instances.json
@@ -488,6 +489,20 @@ NTFY_TOPIC=${NTFY_TOPIC}
 NTFY_SERVER=${NTFY_SERVER}
 SERVER_HOSTNAME=${HOSTNAME}
 AUTO_UPDATE=true
+# --- Scheduled Messages (blank = feature dormant; see docs/scheduled-messages-setup.md) ---
+# Runner auth. Use EITHER a direct Anthropic key (ANTHROPIC_API_KEY) OR a gateway
+# (ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN, e.g. Azure AI Foundry). The base-url
+# path takes precedence when set.
+ANTHROPIC_API_KEY=
+ANTHROPIC_BASE_URL=
+ANTHROPIC_AUTH_TOKEN=
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_GROUP_ID=
+TELEGRAM_ALLOWED_USER_IDS=
+SCHEDULE_COMPACT_TOKEN_THRESHOLD=450000
+SCHEDULE_DEFAULT_MODEL=claude-opus-4-8
+SCHEDULE_MODEL_ALLOWLIST=claude-opus-4-8
+CLAUDE_BIN=$(command -v claude 2>/dev/null || echo claude)
 EOF
 
 # Create systemd services
@@ -525,6 +540,33 @@ ExecStart=/usr/bin/node $INSTALL_DIR/server/dist/index.js
 Restart=always
 RestartSec=5
 EnvironmentFile=$INSTANCE_DIR/.env
+Environment=INSTANCE_NAME=$NAME
+Environment=INSTALL_DIR=$INSTALL_DIR
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# wactl-telegram: per-instance bot service (Scheduled Messages control surface).
+# Runs as the unprivileged wactl user (same user the runner uses). Idles when
+# TELEGRAM_BOT_TOKEN is unset, so it's safe to enable before the operator
+# configures a bot.
+cat > "/etc/systemd/system/wactl-${NAME}-telegram.service" << EOF
+[Unit]
+Description=wactl Telegram Bot ($NAME)
+After=wactl-${NAME}-server.service
+Wants=wactl-${NAME}-server.service
+
+[Service]
+Type=simple
+User=wactl
+WorkingDirectory=$INSTALL_DIR/server
+ExecStart=/usr/bin/node $INSTALL_DIR/server/dist/telegram/service.js
+Restart=always
+RestartSec=10
+EnvironmentFile=$INSTANCE_DIR/.env
+Environment=INSTANCE_NAME=$NAME
+Environment=INSTALL_DIR=$INSTALL_DIR
 
 [Install]
 WantedBy=multi-user.target
@@ -585,6 +627,37 @@ if [ "$FIRST_RUN" = true ]; then
   # Upstream watcher — heads-up ntfy when whatsmeow / mautrix-whatsapp ship
   # protocol-relevant changes. Offset from update cron so they don't overlap.
   echo "0 7 * * * root /opt/wactl/scripts/upstream-watch.sh >> /var/log/wactl-upstream.log 2>&1" > /etc/cron.d/wactl-upstream-watch
+
+  # --- Scheduled Messages: unprivileged runner user + shared tick cron ---
+  # The runner executes claude as this dedicated user (never root) so an LLM with
+  # send egress + untrusted inbound content can't reach root (spec §13.2).
+  if ! id wactl >/dev/null 2>&1; then
+    useradd --system --create-home --shell /usr/sbin/nologin wactl || true
+  fi
+  # The claude CLI is a runtime prerequisite; auth is via ANTHROPIC_API_KEY set in
+  # each instance's .env (the key takes precedence over any login). Warn if the
+  # CLI is missing. It must be reachable by the unprivileged 'wactl' user, so a
+  # system-wide install (not a per-user ~/.local) is recommended.
+  if ! command -v claude >/dev/null 2>&1; then
+    echo "  [!] Scheduled Messages needs the 'claude' CLI on the host (reachable by the 'wactl' user)."
+    echo "      Install:  curl -fsSL https://claude.ai/install.sh | sudo bash   # or: npm i -g @anthropic-ai/claude-code"
+    echo "      Then set ANTHROPIC_API_KEY in the instance .env and see docs/scheduled-messages-setup.md."
+  fi
+  # A single shared tick dispatches due schedules across every instance.
+  echo "* * * * * root /opt/wactl/scripts/schedule-tick.sh >> /var/log/wactl-schedule.log 2>&1" > /etc/cron.d/wactl-schedules
+fi
+
+# Schedules dirs are written by BOTH the root server and the wactl runner, so
+# make them group-shared (setgid → new files inherit the wactl group). Runs every
+# install so newly-added instances get set up too.
+if id wactl >/dev/null 2>&1; then
+  for inst_dir in "$INSTALL_DIR"/instances/*/; do
+    [ -d "$inst_dir" ] || continue
+    sched_dir="${inst_dir%/}/data/schedules"
+    mkdir -p "$sched_dir"
+    chgrp -R wactl "$sched_dir" 2>/dev/null || true
+    chmod -R g+rws "$sched_dir" 2>/dev/null || true
+  done
 fi
 
 # Firewall: open 80/443 for Caddy, close direct instance ports
@@ -601,8 +674,10 @@ fi
 # Start services
 echo "[${STEP_START}/${TOTAL_STEPS}] Starting services..."
 systemctl daemon-reload
-systemctl enable "wactl-${NAME}-bridge" "wactl-${NAME}-server" > /dev/null 2>&1
+systemctl enable "wactl-${NAME}-bridge" "wactl-${NAME}-server" "wactl-${NAME}-telegram" > /dev/null 2>&1
 systemctl start "wactl-${NAME}-bridge" "wactl-${NAME}-server"
+# telegram unit only starts cleanly once wactl user + build exist; start best-effort
+systemctl start "wactl-${NAME}-telegram" 2>/dev/null || true
 
 # Verify services started
 sleep 2

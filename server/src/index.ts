@@ -4,6 +4,7 @@ import fs from "fs";
 import express from "express";
 import cookieParser from "cookie-parser";
 import http from "http";
+import { spawn } from "child_process";
 
 import { BridgeClient } from "./bridge/client";
 import { MCPServerWrapper } from "./mcp/server";
@@ -11,6 +12,7 @@ import { createAdminRouter } from "./admin/routes";
 import { Notifier } from "./notify/ntfy";
 import { mcpAuthRouter } from "@modelcontextprotocol/sdk/server/auth/router.js";
 import { WactlOAuthProvider } from "./mcp/oauth";
+import { activeWatches, watchMatches } from "./schedules/store";
 
 // Load .env from repo root (one directory above server/)
 dotenv.config({ path: path.resolve(__dirname, "../../.env") });
@@ -24,6 +26,9 @@ const ADMIN_PASSWORD_HASH = process.env.ADMIN_PASSWORD_HASH || "";
 const DATA_DIR = process.env.DATA_DIR || path.resolve(__dirname, "../../data");
 const BASE_PATH = process.env.BASE_PATH || ""; // e.g. "/myname" for multi-instance
 const PUBLIC_URL = process.env.PUBLIC_URL || ""; // e.g. "https://wactl.example.com" — enables OAuth
+const INSTANCE_NAME = process.env.INSTANCE_NAME || "default";
+const INSTALL_DIR = process.env.INSTALL_DIR || "/opt/wactl";
+const SCHEDULE_RUN_SCRIPT = path.join(INSTALL_DIR, "scripts", "schedule-run.sh");
 
 if (!MCP_API_KEY) {
   console.warn("[wactl] WARNING: MCP_API_KEY not set — MCP endpoint will reject all requests");
@@ -168,10 +173,37 @@ callbackApp.post("/bridge/events", (req, res) => {
       const account = req.body?.account || "unknown";
       notifier.notifyConnected(account);
     }
+  } else if (event === "message") {
+    // Watch fast-path (spec §11): an inbound message may match a schedule's
+    // watchTarget. Best-effort + low-latency; the cron tick's since-poll is the
+    // source of truth, so a miss here (restart, HistorySync) self-heals.
+    if (!req.body?.isFromMe) {
+      dispatchWatch(String(req.body?.chatJID || ""));
+    }
   }
 
   res.json({ ok: true });
 });
+
+// Fire the runner for every active watch whose target matches this chat. Detached
+// (non-awaited) so the callback returns immediately; the runner's own flock and
+// watch pre-check make concurrent callback+poll firings idempotent.
+function dispatchWatch(chatJid: string): void {
+  if (!chatJid) return;
+  try {
+    const matches = activeWatches().filter((s) => watchMatches(s, chatJid));
+    for (const s of matches) {
+      const child = spawn(SCHEDULE_RUN_SCRIPT, [INSTANCE_NAME, s.slug, "watch"], {
+        detached: true,
+        stdio: "ignore",
+        env: process.env,
+      });
+      child.unref();
+    }
+  } catch (err) {
+    console.error(`[wactl] watch dispatch error:`, err);
+  }
+}
 
 const callbackServer = http.createServer(callbackApp);
 callbackServer.listen(CALLBACK_PORT, "127.0.0.1", () => {

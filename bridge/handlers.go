@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -36,6 +38,12 @@ type BridgeState struct {
 	LoggedIn  bool
 	Account   string // phone number / push name
 
+	// qrNotified gates the "qr_ready" callback to one push per pairing episode.
+	// whatsmeow rotates codes every 20s and runQRLoop re-arms forever, so
+	// notifying per code would spam ntfy. The process exits once a session is
+	// deleted, making "once per process" exactly once per episode.
+	qrNotified bool
+
 	// Resolver maps @lid ↔ @s.whatsapp.net JIDs using whatsmeow's lid_map table.
 	// Nil when session.db has not yet been opened (e.g., first-run QR pairing).
 	Resolver *LIDResolver
@@ -43,10 +51,11 @@ type BridgeState struct {
 
 // RegisterEventHandlers wires up all whatsmeow event handlers.
 func (b *BridgeState) RegisterEventHandlers() {
+	// *events.QR is deliberately not handled here: whatsmeow's QR channel
+	// (see runQRLoop) consumes the same event and is the single source of truth
+	// for QR state. Handling both raced to set QRExpires.
 	b.Client.AddEventHandler(func(evt interface{}) {
 		switch v := evt.(type) {
-		case *events.QR:
-			b.handleQR(v)
 		case *events.PairSuccess:
 			b.handlePairSuccess(v)
 		case *events.Connected:
@@ -65,19 +74,156 @@ func (b *BridgeState) RegisterEventHandlers() {
 	})
 }
 
-func (b *BridgeState) handleQR(evt *events.QR) {
-	if len(evt.Codes) > 0 {
-		b.mu.Lock()
-		b.QRCode = evt.Codes[0]
-		b.QRExpires = time.Now().Add(20 * time.Second)
-		b.Connected = false
-		b.LoggedIn = false
-		b.mu.Unlock()
-		b.Logger.Infof("QR code updated, expires at %s", b.QRExpires.Format(time.RFC3339))
+// setQR publishes a code for the /qr endpoint. timeout is whatsmeow's own
+// validity window for this specific code — 60s for the first of a batch, 20s for
+// each one after. Trusting it stops /qr from reporting a still-scannable code as
+// expired, which a hardcoded 20s did for the first 40 seconds of every pairing.
+func (b *BridgeState) setQR(code string, timeout time.Duration) {
+	b.mu.Lock()
+	b.QRCode = code
+	b.QRExpires = time.Now().Add(timeout)
+	b.Connected = false
+	b.LoggedIn = false
+	expires := b.QRExpires
+	notify := !b.qrNotified
+	b.qrNotified = true
+	b.mu.Unlock()
+
+	b.Logger.Infof("QR code updated, expires at %s", expires.Format(time.RFC3339))
+	if notify {
 		b.notifyCallback("qr_ready", map[string]interface{}{
-			"expiresAt": b.QRExpires.Unix(),
+			"expiresAt": expires.Unix(),
 		})
 	}
+}
+
+func (b *BridgeState) clearQR() {
+	b.mu.Lock()
+	b.QRCode = ""
+	b.QRExpires = time.Time{}
+	b.mu.Unlock()
+}
+
+// runQRLoop drives QR pairing until it succeeds.
+//
+// whatsmeow hands out a batch of ~6 codes (the first valid 60s, the rest 20s
+// each), then closes the channel with a "timeout" event and disconnects the
+// socket. A single pass therefore leaves /qr dead after roughly 2.5 minutes,
+// with no way back short of restarting the process. Re-arming a fresh channel on
+// every non-success outcome keeps a scannable code on the admin panel for as
+// long as the device stays unpaired.
+func (b *BridgeState) runQRLoop(ctx context.Context) {
+	const retryDelay = 5 * time.Second
+
+	// whatsmeow's QR emitter returns without closing the channel when the client
+	// is expected to disconnect (a stream error, say), so ranging it to
+	// completion can block forever. Codes arrive at most 60s apart, so silence
+	// well past that means the batch died quietly and we should re-arm.
+	const silenceTimeout = 2 * time.Minute
+
+	for ctx.Err() == nil {
+		// Check before disconnecting: pairing can complete via an event rather
+		// than a "success" on the channel (e.g. the batch closes on *events.
+		// Disconnected right as PairSuccess lands). Tearing the socket down here
+		// would strand a freshly paired client offline.
+		if b.Client.Store.ID != nil {
+			b.Logger.Infof("Device is paired, stopping QR loop")
+			return
+		}
+
+		// GetQRChannel refuses to run while the socket is up, and whatsmeow leaves
+		// it connected after some terminal events.
+		b.Client.Disconnect()
+
+		qrChan, err := b.Client.GetQRChannel(ctx)
+		if err != nil {
+			if errors.Is(err, whatsmeow.ErrQRStoreContainsID) {
+				// Paired between the check above and here. Restore the socket we
+				// just closed and hand off to the normal reconnect path.
+				b.Logger.Infof("Device paired while re-arming, stopping QR loop")
+				if cerr := b.Client.Connect(); cerr != nil {
+					b.Logger.Warnf("Failed to reconnect after pairing: %v", cerr)
+				}
+				return
+			}
+			b.Logger.Warnf("Failed to get QR channel: %v (retrying in %s)", err, retryDelay)
+			sleepCtx(ctx, retryDelay)
+			continue
+		}
+
+		if err := b.Client.Connect(); err != nil {
+			b.Logger.Warnf("Failed to connect for QR pairing: %v (retrying in %s)", err, retryDelay)
+			sleepCtx(ctx, retryDelay)
+			continue
+		}
+
+		// The channel is buffered and whatsmeow normally closes it after a terminal
+		// event, so draining it also releases the emitter goroutine. The last
+		// non-code event is the outcome; the watchdog covers the paths where the
+		// emitter bails without closing.
+		var outcome string
+		var pairErr error
+	drain:
+		for {
+			select {
+			case evt, ok := <-qrChan:
+				if !ok {
+					break drain
+				}
+				if evt.Event == whatsmeow.QRChannelEventCode {
+					b.setQR(evt.Code, evt.Timeout)
+					continue
+				}
+				outcome, pairErr = evt.Event, evt.Error
+			case <-time.After(silenceTimeout):
+				b.Logger.Warnf("QR channel went silent for %s without closing, re-arming", silenceTimeout)
+				outcome = ""
+				break drain
+			case <-ctx.Done():
+				return
+			}
+		}
+		b.clearQR()
+
+		switch outcome {
+		case whatsmeow.QRChannelSuccess.Event:
+			b.Logger.Infof("QR pairing successful")
+			return
+		case whatsmeow.QRChannelClientOutdated.Event:
+			b.Logger.Errorf("whatsmeow is too old for WhatsApp's pairing protocol; upgrade the bridge")
+			return
+		case whatsmeow.QRChannelTimeout.Event, whatsmeow.QRChannelErrUnexpectedEvent.Event, "":
+			b.Logger.Infof("QR batch expired without a scan, requesting a new one")
+		default:
+			b.Logger.Warnf("QR pairing ended with %q (%v), retrying", outcome, pairErr)
+			sleepCtx(ctx, retryDelay)
+		}
+	}
+}
+
+func sleepCtx(ctx context.Context, d time.Duration) {
+	select {
+	case <-ctx.Done():
+	case <-time.After(d):
+	}
+}
+
+// restartForFreshDevice exits so the supervisor can bring the bridge back up.
+//
+// Once WhatsApp removes the device (or the operator logs out), whatsmeow calls
+// store.Device.Delete(), which sets Deleted and swaps every session store for a
+// no-op. From that point Connect() short-circuits to store.ErrDeviceDeleted
+// forever, so this client can never re-pair — a new Device has to come from the
+// container. Rather than swap b.Client out from under every in-flight handler,
+// exit: the unit is Restart=always, and main() creates a fresh device and enters
+// runQRLoop on the way back up.
+func (b *BridgeState) restartForFreshDevice(reason string) {
+	go func() {
+		// Give notifyCallback's POST (and any in-flight HTTP response) time to land.
+		time.Sleep(2 * time.Second)
+		b.Logger.Warnf("%s; exiting so the supervisor can restart with a fresh device", reason)
+		os.Exit(0)
+	}()
 }
 
 func (b *BridgeState) handlePairSuccess(evt *events.PairSuccess) {
@@ -111,36 +257,14 @@ func (b *BridgeState) handleLoggedOut() {
 	b.Connected = false
 	b.LoggedIn = false
 	b.Account = ""
+	b.QRCode = ""
 	b.mu.Unlock()
 	b.Logger.Warnf("Logged out from WhatsApp")
 	b.notifyCallback("logged_out", nil)
 
-	// Attempt to get a new QR channel for re-authentication
-	go func() {
-		time.Sleep(2 * time.Second)
-		qrChan, err := b.Client.GetQRChannel(context.Background())
-		if err != nil {
-			b.Logger.Warnf("Failed to get QR channel after logout: %v", err)
-			return
-		}
-		if err := b.Client.Connect(); err != nil {
-			b.Logger.Warnf("Failed to reconnect after logout: %v", err)
-			return
-		}
-		for evt := range qrChan {
-			if evt.Event == "code" {
-				b.mu.Lock()
-				b.QRCode = evt.Code
-				b.QRExpires = time.Now().Add(20 * time.Second)
-				b.mu.Unlock()
-				b.notifyCallback("qr_ready", map[string]interface{}{
-					"expiresAt": b.QRExpires.Unix(),
-				})
-			} else {
-				break
-			}
-		}
-	}()
+	// whatsmeow has already deleted the device by the time this fires, so
+	// re-pairing on this client is impossible. Restart into a fresh one.
+	b.restartForFreshDevice("Session deleted by WhatsApp")
 }
 
 func (b *BridgeState) handleStreamReplaced() {

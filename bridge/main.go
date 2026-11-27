@@ -98,34 +98,15 @@ func main() {
 	bridge.RegisterEventHandlers()
 
 	// Connect to WhatsApp
-	if client.Store.ID == nil {
-		// New device — need QR pairing
-		logger.Infof("No existing session, waiting for QR scan...")
-		qrChan, err := client.GetQRChannel(context.Background())
-		if err != nil {
-			logger.Errorf("Failed to get QR channel: %v", err)
-			os.Exit(1)
-		}
-		if err := client.Connect(); err != nil {
-			logger.Errorf("Failed to connect: %v", err)
-			os.Exit(1)
-		}
+	qrCtx, qrCancel := context.WithCancel(context.Background())
+	defer qrCancel()
 
-		// Process QR events - the event handler will also capture these
-		go func() {
-			for evt := range qrChan {
-				if evt.Event == "code" {
-					bridge.mu.Lock()
-					bridge.QRCode = evt.Code
-					bridge.QRExpires = time.Now().Add(20 * time.Second)
-					bridge.mu.Unlock()
-					logger.Infof("QR code ready (scan via admin panel or /qr endpoint)")
-				} else if evt.Event == "success" {
-					logger.Infof("QR pairing successful")
-					break
-				}
-			}
-		}()
+	if client.Store.ID == nil {
+		// New device — need QR pairing. runQRLoop owns connecting in this case:
+		// it keeps re-arming whatsmeow's QR channel so /qr always has a live code
+		// for the admin panel, instead of going dead after one ~2.5min batch.
+		logger.Infof("No existing session, waiting for QR scan...")
+		go bridge.runQRLoop(qrCtx)
 	} else {
 		// Existing session — just connect
 		if err := client.Connect(); err != nil {
@@ -153,6 +134,7 @@ func main() {
 	<-sig
 
 	logger.Infof("Shutting down...")
+	qrCancel()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := httpServer.Shutdown(ctx); err != nil {

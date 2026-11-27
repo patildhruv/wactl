@@ -2,6 +2,7 @@ import { z } from "zod";
 import { BridgeClient } from "../bridge/client";
 import fs from "fs";
 import path from "path";
+import { SCHEDULE_TOOLS } from "./scheduleTools";
 
 /**
  * Single source of truth for MCP tool metadata. Both `tools.ts` (the dispatch
@@ -370,6 +371,9 @@ Returns: { account (phone user-part), connected, loggedIn, uptime (seconds) }`,
     schema: {},
     handler: async (bridge) => bridge.getStatus(),
   },
+
+  // Scheduled-messages tools (schedule_*) — see scheduleTools.ts / spec §5.
+  ...SCHEDULE_TOOLS,
 ];
 
 export async function executeTool(
