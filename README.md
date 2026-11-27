@@ -38,7 +38,7 @@ wactl bridges your personal WhatsApp account to any [MCP](https://modelcontextpr
 | **OAuth 2.1** | Claude web (claude.ai) support via OAuth 2.1 with PKCE. Consent screen uses your admin password. Zero extra dependencies |
 | **Admin Security** | bcrypt passwords, 24h sessions, rate-limited login (5 attempts/min), httpOnly cookies |
 | **Auto-Updates** | Daily cron fetches latest whatsmeow, builds, self-tests on a temp port, hot-swaps. Rolls back on failure |
-| **Push Notifications** | Self-hosted [ntfy](https://ntfy.sh) or public ntfy.sh — alerts for disconnects, QR ready, reconnects, update status |
+| **Push Notifications** | Self-hosted [ntfy](https://ntfy.sh) or public ntfy.sh — alerts for real session breaks (QR / logout / stream replaced), whatsmeow updates, and a 5-min stuck-offline watchdog. Silent websocket reconnects are suppressed so the ntfy doesn't become noise |
 | **Contact Sync** | 5000+ contacts synced from WhatsApp on connect. Push names captured from every message |
 | **Dual MCP Transport** | Streamable HTTP (`/mcp`) for modern clients + SSE (`/mcp/sse`) for legacy clients |
 | **Docker** | Multi-stage build + docker-compose for multi-account setups (note: Scheduled Messages needs the systemd install path, not Docker) |
@@ -240,14 +240,17 @@ Manage schedules from Claude.ai (or Claude Code). Creating a schedule writes it 
   "senderName": "Asha Sharma",         // best display (saved > push)
   "senderSavedName": "Asha Sharma",    // from your address book
   "senderPushName": "Asha",               // from their WhatsApp profile
-  "body": "meeting at 10",
+  "body": "meeting at 10",       // also holds image/video/document captions (PR #24)
   "timestamp": 1776223721,                     // Unix epoch seconds (UTC)
   "isFromMe": false,
   "hasMedia": false,
+  "mediaType": "",                             // "image" | "video" | "audio" | "document" when hasMedia
   "quotedMessageId": "",                       // id of the replied-to message, if any
   "chatJid": "919999900000@s.whatsapp.net"     // present on search_messages / get_message
 }
 ```
+
+> **Note:** captions on image/video/document messages land in `body`. Messages stored before PR #24 (merged 2026-04-22) have `body: ""` even when a caption exists on WhatsApp; use the bridge's admin `POST /resync` endpoint (see MAINTENANCE.md) to request an on-demand history sync for those, though WhatsApp's primary device may decline.
 
 WhatsApp uses two JID namespaces for individual identities:
 - `@s.whatsapp.net` — phone-number JIDs (DMs)
@@ -276,6 +279,18 @@ Repeating, context-aware WhatsApp outreach — payment reminders, work follow-up
 **Upgrading server code** (MCP tools, admin, scheduled messages) pulls + rebuilds bridge and server:
 ```bash
 sudo /opt/wactl/scripts/upgrade.sh
+```
+
+---
+
+## CLI
+
+```bash
+wactl status     # Connection, uptime, MCP clients
+wactl logs       # Tail live logs (journalctl)
+wactl restart    # Restart bridge + server
+wactl auth       # QR status + admin panel URL
+wactl config     # Print config (secrets redacted)
 ```
 
 ---
